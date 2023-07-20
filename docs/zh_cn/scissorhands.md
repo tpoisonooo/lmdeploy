@@ -23,7 +23,7 @@ B+D 方案同时开启，kv_cache 显存是 fp16 版的 25%（对称量化精度
 - 配置 kCacheKVTrim 最多使用 1024 长度 kv_cache
 - 每生成 128 token 剪一次
 
-lmdeploy 的实现：
+lmdeploy 方案：
 
 - 用户第一轮对话，输入 1280 个字符。
 
@@ -45,4 +45,10 @@ lmdeploy 的实现：
 
 因为攒到 1024 才 trim，所以需要缓存很多 attention_score_mean 。这是有额外开销的。
 
-// TODO 10 段 attention_score 怎么算一个大 score
+// 10 段 attention_score 怎么算一个大 score  ?  和多轮对话流程一致
+
+实现方法
+1. Request.h 新增 only_context，表示跳过 generate 只做 context；
+2. 接收请求的时候。输入若超过 128，例如 300。截断输入成 <128, 128, 44> 多部分。前几个 Request mark 成 only_context，最后一个是正常对话；
+3. - 测试，此时输出应该和没拆分一致
+4. 在 contextAttn 和 generate 阶段，判断是否超过 1024，超过就 trim 成 896
