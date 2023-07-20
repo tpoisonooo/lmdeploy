@@ -74,6 +74,7 @@ protected:
         size_t  max_key_len;
         Tensor* k_cache;
         Tensor* v_cache;
+        Tensor* attention_score;
         int*    input_length{};
         int*    history_length{};
         int*    context_length{};

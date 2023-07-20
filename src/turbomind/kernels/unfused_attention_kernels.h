@@ -55,6 +55,19 @@ struct MaskedSoftmaxParam {
     const T* linear_bias_slopes = nullptr;  // (head_num,), optional
 };
 
+template<typename T>
+struct AttentionScoreMeanParam {
+    const T*  input  = nullptr;
+    T*  output       = nullptr;
+    int batch_size  = 0;
+    int q_length    = 0;
+    int k_length    = 0;
+    int num_heads   = 0;
+};
+
+template<typename T>
+void invokeAttentionScoreMean(AttentionScoreMeanParam<T>& param, cudaStream_t stream);
+
 template<typename T, typename T_IN>
 void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream);
 

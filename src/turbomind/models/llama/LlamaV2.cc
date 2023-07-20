@@ -84,13 +84,13 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     debug_(isDebug()),
     step_length_(step_length),
     batch_(max_batch_size, max_context_token_num, session_len, this),
-    shared_state_(shared_state)
+    shared_state_(shared_state),
+    quant_policy_(quant_policy)
 
 {
     TM_LOG_DEBUG(__PRETTY_FUNCTION__);
     FT_CHECK(vocab_size_ % tensor_para_.world_size_ == 0);
     TM_LOG_INFO("NCCL group_id = %d", tensor_para_.group_id_);
-
     size_t elem_bits = 0;
     if (quant_policy & QuantPolicy::kCacheKVInt8) {
         elem_bits = sizeof(int8_t) * 8;
@@ -102,6 +102,11 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     else {
         elem_bits = sizeof(T) * 8;
     }
+
+    float trim_ratio = 1.f;
+    if (quant_policy & QuantPolicy::kCacheKVTrim) {
+        trim_ratio = 0.5f;
+    }
     kv_cache_mgr_ = std::make_unique<LlamaCacheManager>(num_layer_,
                                                         local_head_num_,
                                                         size_per_head_,
@@ -110,6 +115,7 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
                                                         cache_max_entry_count,
                                                         cache_chunk_size,
                                                         tensor_para.rank_,
+                                                        trim_ratio,
                                                         allocator);
     initialize(use_context_fmha, quant_policy);
     start();
@@ -191,6 +197,7 @@ template<typename T>
 void LlamaV2<T>::contextDecode(T*         deocder_output,
                                uintptr_t* k_cache_ptr,
                                uintptr_t* v_cache_ptr,
+                               T*         attention_score_buf,
                                T*         context_decoder_input_buf,
                                T*         context_decoder_output_buf,
                                const int* input_ids,
@@ -245,13 +252,15 @@ void LlamaV2<T>::contextDecode(T*         deocder_output,
         {"decoder_output", {MEMORY_GPU, dtype, {bsz, max_input_len, hidden_units_}, context_decoder_output_buf}},
         {"key_cache", {MEMORY_GPU, TYPE_UINT64, {bsz}, k_cache_ptr}},
         {"value_cache", {MEMORY_GPU, TYPE_UINT64, {bsz}, v_cache_ptr}},
-        {"last_token_hidden_units", {MEMORY_GPU, dtype, {bsz, hidden_units_}, deocder_output}}};
+        {"last_token_hidden_units", {MEMORY_GPU, dtype, {bsz, hidden_units_}, deocder_output}},
+        {"attention_score", {MEMORY_GPU, dtype, {bsz, max_q_len, max_q_len}, attention_score_buf}}};
 
     context_decoder_->forward(&decoder_output_tensors, &decoder_input_tensors, &weights_->decoder_layer_weights);
 
     if (tensor_para_.rank_ == 0) {
         TM_LOG_INFO("context decoding end");
     }
+
 }
 
 template<typename T>

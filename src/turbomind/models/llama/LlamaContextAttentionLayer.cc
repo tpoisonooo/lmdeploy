@@ -130,7 +130,8 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
 
     const int max_seq_len = input_tensors->at("max_seq_len").getVal<int>();
 
-    T* attention_out   = output_tensors->at("hidden_features").getPtr<T>();
+    T* attention_out        = output_tensors->at("hidden_features").getPtr<T>();
+    T* attention_score_mean = output_tensors->at("attention_score_mean").getPtr<T>();
     T* attention_input = input_tensors->at("input_query").getPtr<T>();
     T* attention_mask  = input_tensors->at("attention_mask").getPtr<T>();
 
@@ -235,6 +236,21 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
         NcclGuard nccl_guard(tensor_para_, stream_);
         ftNcclAllReduceSum(attention_out, attention_out, num_token * hidden_units_, tensor_para_, stream_);
         sync_check_cuda_error();
+    }
+
+    // for kCacheKVTrim, user input length must
+    if (not use_fmha_ and (quant_policy_ & QuantPolicy::kCacheKVTrim)) {
+        // filter attention score to score_list
+        // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
+        // to [batch_size, local_head_num, 1, max_k_len]
+        AttentionScoreMeanParam param;
+        param.input     = qk_buf_;
+        param.output    = attention_score_mean;
+        param.batch_size    = batch_size;
+        param.q_length      = max_q_len;
+        param.k_length      = max_k_len;
+        param.num_heads     = local_head_num_;
+        invokeAttentionScoreMean(param, stream_);
     }
 
     if (is_free_buffer_after_forward_ == true) {

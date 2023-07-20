@@ -58,6 +58,7 @@ protected:
         size_t                                          max_memory_len;
         Tensor*                                         k_cache;
         Tensor*                                         v_cache;
+        Tensor*                                         attention_score;
         const std::vector<LlamaDecoderLayerWeight<T>*>* weights;
     };
 

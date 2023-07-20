@@ -110,11 +110,13 @@ void LlamaContextDecoder<T>::forwardSelfAttn(const Session&                     
 
     auto& k_cache = *sess.k_cache;
     auto& v_cache = *sess.v_cache;
+    auto& attention_score = *sess.attention_score;
 
     TensorMap self_attention_output_tensors{
         {"hidden_features", {MEMORY_GPU, data_type_, {sess.token_num, hidden_units_}, attn_ffn_io_}},
         {"key_cache", k_cache},
         {"value_cache", v_cache},
+        {"attention_score", attention_score},
     };
 
     context_attention_layer_->forward(&self_attention_output_tensors,  //
@@ -206,6 +208,7 @@ void LlamaContextDecoder<T>::forward(std::unordered_map<std::string, Tensor>*   
 
     sess.k_cache = &output_tensors->at("key_cache");
     sess.v_cache = &output_tensors->at("value_cache");
+    sess.attention_score = &output_tensors->at("attention_score");
 
     allocateBuffer(sess.batch_size, sess.token_num, sess.max_query_len, sess.max_key_len);
 

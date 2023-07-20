@@ -749,6 +749,36 @@ void invokeMaskedSoftmax(MaskedSoftmaxParam<__nv_bfloat16, __nv_bfloat16>& param
 #undef LAUNCH_MAKSED_SOFTMAX
 #undef LAUNCH_MAKSED_SOFTMAX_
 
+template void invokeAttentionScoreMean(AttentionScoreMeanParam<half>& param, cudaStream_t stream);
+template void invokeAttentionScoreMean(AttentionScoreMeanParam<float>& param, cudaStream_t stream);
+
+template<typename T>
+__global__ void attention_score_mean(const T*   input,
+                                     T*         output,
+                                     const int  q_size,
+                                     const int  k_size)
+{
+    const int batch_index = blockIdx.x;
+    const int head_index = blockIdx.y;
+    const int k_index = threadIdx.x;
+
+    float sum = 0.0f;
+    for (int q_index = 0; q_index < q_size; ++q_index) {
+        const int input_index = ((batch_index * gridDim.y + head_index) * q_size + q_index) * k_size + k_index;
+        sum += __half2float(input[input_index]);
+    }
+
+    const int output_index = (batch_index * gridDim.y + head_index) * k_size + k_index;
+    output[output_index] = __float2half(sum / q_size);
+}
+
+template<typename T>
+void invokeAttentionScoreMean(AttentionScoreMeanParam<T>& param, cudaStream_t stream) {
+    dim3 grid(param.batch_size, param.num_heads);
+    dim3 block(param.k_length);
+    attention_score_mean<<<grid, block, stream>>>(param.input, param.output, param.q_length, param.k_length);
+}
+
 template<typename T>
 __global__ void transpose(const T*     src,
                           T*           dst,

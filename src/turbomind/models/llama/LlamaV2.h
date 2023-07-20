@@ -181,6 +181,9 @@ private:
     std::shared_ptr<SharedState> shared_state_;
 
     std::thread internal_thread_;
+
+protected:
+    int quant_policy_;
 };
 
 }  // namespace turbomind

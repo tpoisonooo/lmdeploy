@@ -181,6 +181,10 @@ void LlamaBatch<T>::allocateBuffer(size_t batch_size, size_t session_len)
     finished_buf_  = (bool*)allocator_->reMalloc(finished_buf_, sizeof(bool) * batchxbeam, false);
     seq_limit_len_ = (uint32_t*)allocator_->reMalloc(seq_limit_len_, sizeof(uint32_t) * batch_size, false);
 
+    if (llama->quant_policy_ & QuantPolicy::kCacheKVTrim) {
+        attention_scale_ = (T*)allocator_->reMalloc(attention_scale, sizeof(T) * batchxbeam * max_context_token_num_ * max_context_token_num_);
+    }
+
     is_allocate_buffer_ = true;
 }
 
@@ -749,6 +753,16 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
         }
     }
 }
+
+
+template<typename T>
+void LlamaBatch<T>::trimKV()
+{
+    // evict low attention score kv cache
+    // use memmov
+
+}
+
 
 template<typename T>
 void LlamaBatch<T>::contextDecode()

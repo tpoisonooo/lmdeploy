@@ -17,6 +17,8 @@ enum QuantPolicy
     kReserve2 = 0x02,
     // quantize cache kv
     kCacheKVInt8 = 0x04,
+    // scissorhands https://arxiv.org/pdf/2305.17118.pdf
+    kCacheKVTrim = 0x08,
 };
 
 enum CmpMode

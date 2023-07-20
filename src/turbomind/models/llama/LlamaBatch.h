@@ -46,6 +46,8 @@ public:
     void initializeGeneration();
     bool generate();
 
+    void trimKV();
+
     void finish();
     void finishRequest(int index, bool force_end);
 
@@ -110,6 +112,8 @@ private:
     uintptr_t* h_k_cache_ptr_buf_{};
     uintptr_t* h_v_cache_ptr_buf_{};
     uint32_t*  h_seq_limit_len_{};
+
+    T*  attention_scale_{};
 
     int*      stop_words_buf_{};  // [batch_size, 2, kMaxStopWordsLen]
     int*      bad_words_buf_{};
