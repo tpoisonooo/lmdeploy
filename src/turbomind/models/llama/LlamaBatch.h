@@ -41,6 +41,11 @@ public:
     void initializeSampling(int infer_request_count);
 
     void initialize(const std::vector<std::shared_ptr<Request>>& infer_requests);
+    void trimHookRequest(std::vector<std::shared_ptr<Request>>& infer_requests);
+    bool trimStartGenerate(std::vector<std::shared_ptr<Request>>& infer_requests);
+    void trimMarkFlag(std::vector<std::shared_ptr<Request>>& infer_requests);
+    // std::vector<std::shared_ptr<Request>> trimNextRound(std::vector<std::shared_ptr<Request>>& infer_requests);
+
     void contextDecode();
 
     void initializeGeneration();

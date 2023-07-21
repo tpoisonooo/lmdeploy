@@ -12,6 +12,22 @@
 
 namespace turbomind {
 
+struct CacheKVTrimParam {
+    enum
+    {
+        kNone = 0,
+        kNext = 1,
+        kEnd = 2
+    };
+
+    int stage = 0;
+    int user_input_length = -1;
+    int32_t* user_input_ptr_device = nullptr;
+
+    int processed_length = -1;
+    const int GROUP = 128;
+};
+
 struct Request {
     uint64_t id;
     bool     start_flag;
@@ -34,6 +50,8 @@ struct Request {
         kFail     = 5
     };
     std::promise<int> signal;
+
+    CacheKVTrimParam cache_kv_param;
 };
 
 class RequestQueue {
@@ -45,7 +63,9 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (auto& r : requests) {
-                futures.push_back(r->signal.get_future());
+                if (r->cache_kv_param.stage == CacheKVTrimParam::kNone) {
+                    futures.push_back(r->signal.get_future());
+                }
                 if (r->stop_flag) {
                     stop_queue_.push(std::move(r));
                 }

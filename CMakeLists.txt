@@ -62,7 +62,7 @@ option(SPARSITY_SUPPORT "Build project with Ampere sparsity feature support" OFF
 option(BUILD_FAST_MATH "Build in fast math mode" ON)
 
 if(BUILD_MULTI_GPU)
-  message(STATUS "Add DBUILD_MULTI_GPU, requires MPI and NCCL")
+  message(STATUS "***************** Add DBUILD_MULTI_GPU, requires MPI and NCCL")
   add_definitions("-DBUILD_MULTI_GPU")
   set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
   find_package(MPI REQUIRED)

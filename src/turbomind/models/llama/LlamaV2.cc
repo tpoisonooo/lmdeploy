@@ -438,6 +438,10 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
             batch_.verifyRequests(stop_requests, infer_requests);
         }
 
+        if (not infer_requests.empty()) {
+            fprintf(stdout, "debug");
+        }
+
         // wait while rank-0 is dequeueing
         shared_state_->barrier->wait();
 
@@ -452,13 +456,22 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
         const int infer_request_count = infer_requests.size();
 
         if (!infer_requests.empty()) {
+            batch_.trimHookRequest(infer_requests);
             batch_.initialize(infer_requests);  // reinitialize when new requests come, possible buffer allocation
             batch_.contextDecode();
+            batch_.trimMarkFlag(infer_requests);
             modified = true;
+
         }
 
         // wait while shared stop/infer_requests is being used
         shared_state_->barrier->wait();
+
+        if (not batch_.trimStartGenerate(infer_requests)) {
+            // context decode not finish, continue
+            request_queue.enqueue(infer_requests);
+            continue;
+        }
 
         if (batch_.size()) {
             if (modified) {

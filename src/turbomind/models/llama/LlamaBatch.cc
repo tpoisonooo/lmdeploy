@@ -98,7 +98,7 @@ void LlamaBatch<T>::verifyRequests(std::vector<std::shared_ptr<Request>>& stop_r
         for (auto& r : infer_reqs) {
             if (r) {
                 for (int i = 0; i < batch_size_; ++i) {
-                    if (requests_[i] && requests_[i]->id == r->id) {
+                    if (requests_[i] && requests_[i]->id == r->id && r->cache_kv_param.stage == CacheKVTrimParam::kNone) {
                         invalidate("infer", r, Request::kBusy);
                         break;
                     }
@@ -548,6 +548,139 @@ bool LlamaBatch<T>::generate()
 }
 
 template<typename T>
+void LlamaBatch<T>::trimHookRequest(std::vector<std::shared_ptr<Request>>& infer_requests)
+{
+    for (auto request: infer_requests) {
+        if (request->stop_flag) {
+            continue;
+        }
+        // for user input, split it to many parts, GROUP=128
+        // 
+        // if user_input_len < 128, cache_kv_param.stage=END
+        // if user_input_len > 128 and cache_kv_para.stage=NONE,
+
+        auto& param = request->cache_kv_param;
+        auto& tensor_map = request->inputs[0];
+        if (param.user_input_length < 0) {
+            param.user_input_length = tensor_map.getVal<int>("input_lengths");
+            param.user_input_ptr_device = tensor_map.getPtr<int32_t>("input_ids");
+            param.processed_length = 0;
+        }
+
+        switch(param.stage) {
+            case CacheKVTrimParam::kNone:
+                {
+                    int input_length = param.user_input_length;
+
+                    if (input_length <= param.GROUP) {
+                        param.stage = CacheKVTrimParam::kEnd;
+                    } else {
+                        input_length = param.GROUP;
+                        param.stage = CacheKVTrimParam::kNext;
+                    }
+
+                    // update request user input length
+                    tensor_map.at("input_lengths").setVal<int>(input_length);
+                }
+                break;
+            case CacheKVTrimParam::kNext:
+                {
+                    // already executed context decode, remove part of input with size=GROUP
+                    int32_t* input_ids_ptr = tensor_map.getPtr<int32_t>("input_ids");
+                    param.processed_length += param.GROUP;
+                    int left = param.user_input_length - param.processed_length;
+                    FT_CHECK(left >= 0);
+                    check_cuda_error(cudaMemcpy(input_ids_ptr, input_ids_ptr+param.processed_length, sizeof(int32_t) * std::min(left, param.GROUP), cudaMemcpyDeviceToDevice));
+
+                    tensor_map.at("input_lengths").setVal<int>(std::min(left, param.GROUP));
+
+                    if (left <= param.GROUP) {
+                        // last round, setup kEnd
+                        param.stage = CacheKVTrimParam::kEnd;
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+// template<typename T>
+// std::vector<std::shared_ptr<Request>> trimNextRound(std::vector<std::shared_ptr<Request>>& infer_requests)
+// {
+//     std::vector<std::shared_ptr<Request>> requests;
+//     std::copy_if(infer_requests.begin(), infer_requests.end(), std::back_inserter(requests), [](std::shared_ptr<Request> r) {
+//         return r->cache_kv_param.stage == CacheKVTrimParam::kNext;
+//     });
+//     return requests;
+// }
+
+template<typename T>
+bool LlamaBatch<T>::trimStartGenerate(std::vector<std::shared_ptr<Request>>& infer_requests) {
+    bool bGenerate = true;
+    for (auto r: infer_requests) {
+        if (r->cache_kv_param.stage == CacheKVTrimParam::kNext) {
+            bGenerate = false;
+            break;            
+        }
+    }
+    return bGenerate;
+}
+
+template<typename T>
+void LlamaBatch<T>::trimMarkFlag(std::vector<std::shared_ptr<Request>>& infer_requests) {
+    for (auto r: infer_requests) {
+        if (r->cache_kv_param.stage != CacheKVTrimParam::kNone and r->start_flag) {
+            r->start_flag = false;
+        }
+
+        LlamaCacheManager::Sequence seq = llama_->kv_cache_mgr_->fetch(r->id, stream_);
+        const CacheKVTrimParam& param = r->cache_kv_param;
+        const int cur_decode_length = std::min(param.GROUP, param.user_input_length-param.processed_length);
+
+        const int last_index = seq.cache_len;
+        seq.cache_len += cur_decode_length;
+        seq.token_ids.resize(seq.cache_len);
+
+        check_cuda_error(cudaMemcpy(seq.token_ids.data() + last_index, param.user_input_ptr_device, sizeof(int32_t) * cur_decode_length, cudaMemcpyDeviceToHost));
+
+        llama_->kv_cache_mgr_->update(seq, stream_);
+    }
+
+        // // the last generated token is not processed by decoder thus dont have k/v cache
+        // const int n_steps    = step_ - max_context_len_;
+        // const int cache_len  = h_sequence_lengths_[index];
+        // const int output_len = n_steps > 0 ? cache_len + 1 : cache_len;
+
+        // auto& seq = cached_seq_[index];
+
+        // seq.cache_len = cache_len;
+
+        // // update token IDs
+        // seq.token_ids.resize(output_len);
+        // check_cuda_error(cudaMemcpyAsync(
+        //     seq.token_ids.data(), output_ids_data, sizeof(int) * output_len, cudaMemcpyDefault, stream_));
+
+        // // update random states
+        // seq.random_state_.resize(sizeof(curandState_t) * 2);
+        // check_cuda_error(cudaMemcpyAsync(seq.random_state_.data(),
+        //                                  llama_->dynamic_decode_layer_->topk_curandstate_buf() + index,
+        //                                  sizeof(curandState_t),
+        //                                  cudaMemcpyDefault,
+        //                                  stream_));
+        // check_cuda_error(cudaMemcpyAsync(seq.random_state_.data() + sizeof(curandState_t),
+        //                                  llama_->dynamic_decode_layer_->topp_curandstate_buf() + index,
+        //                                  sizeof(curandState_t),
+        //                                  cudaMemcpyDefault,
+        //                                  stream_));
+
+        // check_cuda_error(cudaStreamSynchronize(stream_));
+
+        // llama_->kv_cache_mgr_->update(cached_seq_[index], stream_);
+}
+
+template<typename T>
 void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infer_requests)
 {
     FT_CHECK(batch_size_ + infer_requests.size() <= max_batch_size_);
@@ -803,6 +936,49 @@ void LlamaBatch<T>::contextDecode()
                                                      stream_));
                     context_decoder_ids += get_input_len(j);
                 }
+
+                // {
+                //     // kCacheKVTrim
+                //     constexpr int STEP = 128;
+                //     constexpr int CACHEKV_MAX_LEN = 1024;
+                //     std::vector<int> fragments;
+                //     if (max_input_len <= CACHEKV_MAX_LEN) {
+                //         fragments = {max_input_len};
+                //     } else {
+                //         int raw_input_len = max_input_len - CACHEKV_MAX_LEN;
+                //         while(raw_input_len > STEP) {
+                //             fragments.push_back(STEP);
+                //             raw_input_len -= STEP;
+                //         }
+                //         if (raw_input_len > 0) {
+                //             fragments.push_back(raw_input_len);
+                //         }
+                //     }
+
+                //     int last_sum = 0;
+                //     for (auto fragment: fragments) {
+                //         llama_->contextDecode(nullptr,
+                //                             k_cache_ptr_buf_ + offset,
+                //                             v_cache_ptr_buf_ + offset,
+                //                             context_decoder_input_buf_,
+                //                             nullptr,
+                //                             context_decoder_ids_buf_,
+                //                             input_length_buf_ + offset,
+                //                             history_length_buf_ + offset,
+                //                             context_length_buf_ + offset,
+                //                             token_num,
+                //                             fragment,
+                //                             last_sum + fragment,
+                //                             session_len_,
+                //                             context_decode_batch_size);
+
+                //         last_sum += fragment;
+                //         // remove processed input_buf data
+                        
+                //         // update metainfo
+                //     }
+                // }
+
                 llama_->contextDecode(nullptr,
                                       k_cache_ptr_buf_ + offset,
                                       v_cache_ptr_buf_ + offset,
@@ -891,7 +1067,7 @@ void LlamaBatch<T>::synchronize()
     // compact
     int idx = 0;
     for (int i = 0; i < batch_size_; ++i) {
-        if (requests_[i]) {
+        if (requests_[i] and requests_[i]->cache_kv_param.stage == CacheKVTrimParam::kNone) {
             h_input_length_buf_[idx]   = 0;
             h_history_length_buf_[idx] = 0;
 

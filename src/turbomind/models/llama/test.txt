@@ -1,0 +1,41 @@
+$24 = {id = 0, 
+start_flag = true, 
+end_flag = true, 
+stop_flag = false, 
+inputs = std::vector of length 1, capacity 1 = {{
+      tensor_map_ = std::unordered_map with 12 elements = {
+        ["request_output_len"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_INT32, 
+          shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557baa17a0, offsets = std::vector of length 0, capacity 0}, 
+        ["min_length"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_INT32, shape = std::vector of length 1, capacity 1 = {1}, 
+          data = 0x55557ba99c00, offsets = std::vector of length 0, capacity 0}, 
+        ["start_id"] = {where = turbomind::MEMORY_CPU, 
+          type = turbomind::TYPE_INT32, shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557baa17e0, 
+          offsets = std::vector of length 0, capacity 0}, 
+        ["beam_width"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_INT32, 
+          shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557ba99b00, offsets = std::vector of length 0, capacity 0}, 
+        ["len_penalty"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_FP32, shape = std::vector of length 1, capacity 1 = {1}, 
+          data = 0x55557ba99c20, offsets = std::vector of length 0, capacity 0}, 
+        ["temperature"] = {where = turbomind::MEMORY_CPU, 
+          type = turbomind::TYPE_FP32, shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557ba99b60, 
+          offsets = std::vector of length 0, capacity 0}, 
+        ["bad_words_list"] = {where = turbomind::MEMORY_GPU, type = turbomind::TYPE_INT32, 
+          shape = std::vector of length 2, capacity 2 = {1, 0}, data = 0x0, offsets = std::vector of length 0, capacity 0}, ["random_seed"] = {
+          where = turbomind::MEMORY_CPU, type = turbomind::TYPE_UINT64, shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557ba99ba0, 
+          offsets = std::vector of length 0, capacity 0}, 
+        ["input_ids"] = {where = turbomind::MEMORY_GPU, type = turbomind::TYPE_INT32, 
+          shape = std::vector of length 2, capacity 2 = {1, 1280}, data = 0x7fff7b6a2400, offsets = std::vector of length 0, capacity 0}, 
+        ["input_lengths"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_INT32, shape = std::vector of length 1, capacity 1 = {1}, 
+          data = 0x55557baa17c0, offsets = std::vector of length 0, capacity 0}, 
+        ["runtime_top_k"] = {where = turbomind::MEMORY_CPU, 
+          type = turbomind::TYPE_UINT32, shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557ba99aa0, 
+          offsets = std::vector of length 0, capacity 0}, 
+        ["end_id"] = {where = turbomind::MEMORY_CPU, type = turbomind::TYPE_INT32, 
+          shape = std::vector of length 1, capacity 1 = {1}, data = 0x55557baa1800, offsets = std::vector of length 0, capacity 0}
+          }}
+          }, 
+  
+outputs = std::vector of length 1, capacity 1 = {{tensor_map_ = std::unordered_map with 2 elements = {["output_ids"] = {
+          where = turbomind::MEMORY_GPU, type = turbomind::TYPE_UINT32, shape = std::vector of length 3, capacity 3 = {1, 1, 2056}, 
+          data = 0x344443200, offsets = std::vector of length 0, capacity 0}, ["sequence_length"] = {where = turbomind::MEMORY_GPU, 
+          type = turbomind::TYPE_UINT32, shape = std::vector of length 2, capacity 2 = {1, 1}, data = 0x344447400, 
+          offsets = std::vector of length 0, capacity 0}}}},

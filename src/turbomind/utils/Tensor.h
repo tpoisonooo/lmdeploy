@@ -163,6 +163,34 @@ struct Tensor {
     }
 
     template<typename T>
+    inline void setVal(size_t index, T val)
+    {
+        TM_LOG_DEBUG("%s start", __PRETTY_FUNCTION__);
+        FT_CHECK(where == MEMORY_CPU);
+        FT_CHECK(data != nullptr);
+        FT_CHECK_WITH_INFO(index < size(), "index is larger than buffer size");
+
+        if (getTensorType<T>() != type) {
+            TM_LOG_DEBUG("getVal with type %s, but data type is: %s",
+                         getNumpyTypeDesc(getTensorType<T>()).c_str(),
+                         getNumpyTypeDesc(type).c_str());
+        }
+        ((T*)data)[index] = val;
+    }
+
+    template<typename T>
+    inline void setVal(T val)
+    {
+        TM_LOG_DEBUG("%s start", __PRETTY_FUNCTION__);
+        if (getTensorType<T>() != type) {
+            TM_LOG_DEBUG("getVal with type %s, but data type is: %s",
+                         getNumpyTypeDesc(getTensorType<T>()).c_str(),
+                         getNumpyTypeDesc(type).c_str());
+        }
+        return setVal<T>(0, val);
+    }
+
+    template<typename T>
     inline T* getPtr() const
     {
         TM_LOG_DEBUG("%s start", __PRETTY_FUNCTION__);
