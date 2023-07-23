@@ -352,6 +352,7 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
 
     //////////////////////////////////////////////
     /// ! masked softmax (kernel asserts k_length <= 4096)
+
     MaskedSoftmaxParam<T, T> param{};
     param.attention_score    = qk_buf_;
     param.qk                 = qk_buf_;
@@ -383,7 +384,6 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
                                         size_per_head_,                 // ldc,
                                         max_q_len * size_per_head_,     // strideC
                                         batch_size * local_head_num_);  // batchCount
-
     //////////////////////////////////////////////
     /// transpose <B,h,s,D> -> <B,s,h,D>
     invokeTransposeAttentionOutRemovePadding(qkv_buf_2_,
