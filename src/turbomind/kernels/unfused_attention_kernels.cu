@@ -1157,22 +1157,11 @@ __global__ void transpose_remove_padding(const T*     src,
     const int src_offset_base = src_batch_id * seq_len * head_num * size_per_head + src_seq_id * size_per_head;
     const int dst_offset_base = dst_seq_id * head_num * size_per_head;
 
-    using Int8_Packed_T  = typename packed_as<int8_t, num_elems<T>::value>::type;
-    using Float_Packed_T = typename packed_as<float, num_elems<T>::value>::type;
-    const Float_Packed_T scale_val =
-        int8_mode == 2 ? cuda_cast<Float_Packed_T>(*scale) : cuda_cast<Float_Packed_T>(0.0f);
-
     for (int idx = threadIdx.x; idx < head_num * size_per_head; idx += blockDim.x) {
         const int head_id   = idx / size_per_head;
         const int hidden_id = idx % size_per_head;
         const T   src_elem  = ldg(&src[src_offset_base + head_id * seq_len * size_per_head + hidden_id]);
-        if (int8_mode == 2) {
-            reinterpret_cast<Int8_Packed_T*>(dst)[dst_offset_base + idx] =
-                cuda_cast<Int8_Packed_T>(cuda_cast<Float_Packed_T>(src_elem) * scale_val);
-        }
-        else {
-            dst[dst_offset_base + idx] = src_elem;
-        }
+        dst[dst_offset_base + idx] = src_elem;
     }
 }
 
