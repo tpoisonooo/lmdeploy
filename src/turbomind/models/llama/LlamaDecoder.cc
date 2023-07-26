@@ -124,11 +124,13 @@ void LlamaDecoder<T>::forwardSelfAttn(const LlamaDecoder::Session&              
     self_attention_input_tensors.insert("layer_id", {MEMORY_CPU, TYPE_INT32, {1}, &layer_id});
     auto& k_cache = *sess.k_cache;
     auto& v_cache = *sess.v_cache;
+    auto& attn_score_sum = *sess.attn_score_sum;
 
     TensorMap self_attention_output_tensors{
         {"attention_output", {MEMORY_GPU, data_type_, {sess.batch_size, hidden_units_}, attn_io}},
         {"key_cache", k_cache},
         {"value_cache", v_cache},
+        {"attention_score_sum", attn_score_sum}
     };
 
     self_attention_layer_->forward(&self_attention_output_tensors,  //

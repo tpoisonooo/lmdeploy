@@ -18,7 +18,7 @@ public:
     int size() const noexcept
     {
         return batch_size_;
-    };
+    }
 
     int maxSize() const noexcept
     {
@@ -44,6 +44,9 @@ public:
     void trimHookRequest(std::vector<std::shared_ptr<Request>>& infer_requests);
     bool trimStartGenerate(std::vector<std::shared_ptr<Request>>& infer_requests);
     void trimMarkFlag(std::vector<std::shared_ptr<Request>>& infer_requests);
+
+    void trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_requests);
+
     // std::vector<std::shared_ptr<Request>> trimNextRound(std::vector<std::shared_ptr<Request>>& infer_requests);
 
     void contextDecode();
@@ -94,9 +97,13 @@ private:
 
     uint64_t* k_cache_ptr_buf_{};
     uint64_t* v_cache_ptr_buf_{};
+    uint64_t* attn_sum_ptr_buf_{};
+    int* kv_cache_trim_window_{};
+    int* kv_cache_trim_bottom_k_{};
 
     float* logits_buf_{};        // combined logits
     float* local_logits_buf_{};  // tensor parallel local logits
+    float* attention_score_sum_buf_{}; // sum attention_score with dim=-2
 
     // used by dynamic decoder
     int*      token_ids_buf_{};   // all token IDs in [S, B], indexed using `step`
@@ -114,6 +121,7 @@ private:
     bool*      h_finished_buf_{};
     uintptr_t* h_k_cache_ptr_buf_{};
     uintptr_t* h_v_cache_ptr_buf_{};
+    uintptr_t* h_attn_sum_ptr_buf_{};
     uint32_t*  h_seq_limit_len_{};
 
     int*      stop_words_buf_{};  // [batch_size, 2, kMaxStopWordsLen]

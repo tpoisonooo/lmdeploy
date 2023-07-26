@@ -48,6 +48,7 @@ static inline void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
                                                       T**          k_cache_per_sample,
                                                       T**          v_cache_per_sample,
                                                       size_t       kv_cache_per_sample_offset,
+                                                      float**      attn_score_sum,
                                                       const int*   cache_indir,
                                                       T*           context_buf,
                                                       const bool*  finished,
@@ -109,6 +110,7 @@ static inline void fusedQKV_masked_attention_dispatch(const T*     qkv_buf,
     params.k_cache_per_sample         = reinterpret_cast<DataType**>(k_cache_per_sample);
     params.v_cache_per_sample         = reinterpret_cast<DataType**>(v_cache_per_sample);
     params.kv_cache_per_sample_offset = kv_cache_per_sample_offset;
+    params.attn_score_sum             = attn_score_sum;
     params.k_cache_interleaved        = false;
     params.cache_indir                = cache_indir;
     params.batch_size                 = inference_batch_size;
@@ -211,6 +213,7 @@ void LlamaDecoderSelfAttentionLayer<T>::forward(TensorMap*                     o
     T*  hidden_features_data = output_tensors->getPtr<T>("attention_output");
     T** key_cache_ptrs       = output_tensors->getPtr<T*>("key_cache");
     T** value_cache_ptrs     = output_tensors->getPtr<T*>("value_cache");
+    float** attn_score_sum   = output_tensors->getPtr<float*>("attention_score_sum");
 
     const int layer_id = input_tensors->getVal<int>("layer_id");
 
@@ -240,6 +243,7 @@ void LlamaDecoderSelfAttentionLayer<T>::forward(TensorMap*                     o
         key_cache_ptrs,
         value_cache_ptrs,
         kv_cache_layer_offset,
+        attn_score_sum,
         cache_indir,
         context_buf_,
         finished_data,

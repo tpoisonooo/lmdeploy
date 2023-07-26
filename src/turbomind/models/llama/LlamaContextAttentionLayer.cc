@@ -57,6 +57,8 @@ void LlamaContextAttentionLayer<T>::allocateBuffer(size_t batch_size,
             k_cache_buf_, 2 * sizeof(T) * batch_size * local_head_num_ * max_k_len * size_per_head_, true);
         v_cache_buf_ = k_cache_buf_ + batch_size * local_head_num_ * max_k_len * size_per_head_;
 
+        attention_score_sum_buf_ = (float*)allocator_->reMalloc(attention_score_sum_buf_, sizeof(float) * batch_size * local_head_num_ * 1280, true);
+
         qk_buf_ =
             (T*)allocator_->reMalloc(qk_buf_, sizeof(T) * batch_size * local_head_num_ * max_q_len * max_k_len, true);
 
@@ -131,6 +133,7 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
     const int max_seq_len = input_tensors->at("max_seq_len").getVal<int>();
 
     T* attention_out   = output_tensors->at("hidden_features").getPtr<T>();
+
     T* attention_input = input_tensors->at("input_query").getPtr<T>();
     T* attention_mask  = input_tensors->at("attention_mask").getPtr<T>();
 
@@ -177,6 +180,7 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
 
     auto k_cache_ptrs = output_tensors->getPtr<T*>("key_cache");
     auto v_cache_ptrs = output_tensors->getPtr<T*>("value_cache");
+    auto attn_sum_ptrs = output_tensors->getPtr<float*>("attention_score_sum");
     //////////////////////////////////////////////////////////
     /// insert the k/v computed from inputs into k/v cache
     /// transpose kv -> kv cache
@@ -365,6 +369,20 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
     param.linear_bias_slopes = nullptr;
     invokeMaskedSoftmax(param, stream_);
     sync_check_cuda_error();
+
+    if (not use_fmha_ and (quant_policy_ & QuantPolicy::kCacheKVTrim)) {
+        // sum attention_score
+        // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
+        // to [batch_size, local_head_num, 1, max_k_len]
+        AttentionScoreMeanParam param;
+        param.input     = qk_buf_;
+        param.output    = attention_score_sum;
+        param.batch_size    = batch_size;
+        param.q_length      = max_q_len;
+        param.k_length      = max_k_len;
+        param.num_heads     = local_head_num_;
+        invokeAttentionScoreSum(param, stream_);
+    }
 
     //////////////////////////////////////////////
     /// softmax(QK)*V batch gemm

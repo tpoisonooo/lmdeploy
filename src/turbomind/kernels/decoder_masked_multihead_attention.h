@@ -130,6 +130,7 @@ struct Multihead_attention_params: public Multihead_attention_params_base<T> {
 
     T**    k_cache_per_sample         = nullptr;
     T**    v_cache_per_sample         = nullptr;
+    float** attn_score_sum            = nullptr;
     size_t kv_cache_per_sample_offset = 0;
     bool   k_cache_interleaved        = true;
 };

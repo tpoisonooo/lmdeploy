@@ -749,6 +749,203 @@ void invokeMaskedSoftmax(MaskedSoftmaxParam<__nv_bfloat16, __nv_bfloat16>& param
 #undef LAUNCH_MAKSED_SOFTMAX
 #undef LAUNCH_MAKSED_SOFTMAX_
 
+template void invokeAttentionScoreSum(AttentionScoreSumParam<half>& param, cudaStream_t stream);
+template void invokeAttentionScoreSum(AttentionScoreSumParam<float>& param, cudaStream_t stream);
+
+// input shape [batch, num_head, q_size, k_size]
+// ouput shape [batch, 1, k_size]
+template<typename T>
+__global__ void attention_score_sum(const T*    input,
+                                    float*      output,
+                                    const int   batch,
+                                    const int   num_head,
+                                    const int   q,
+                                    const int   k)
+{
+    // Calculate thread ID
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    // Check that thread is within the array bounds
+    if (idx < batch*k) {
+        float sum = 0.0f;
+        for(int i = 0; i < num_head; i++) {
+            for(int j = 0; j < q; j++) {
+                sum += __half2float(input[i*q*k + j*k + idx]);
+            }
+        }
+        output[idx] = sum / num_head;
+    }
+}
+
+template<typename T>
+void invokeAttentionScoreSum(AttentionScoreMeanParam<T>& param, cudaStream_t stream) {
+    int blockSize = 256;
+    dim3 grid(param.batch_size * param.k_length + blockSize - 1) / blockSize;
+    attention_score_sum<<<grid, blockSize, stream>>>(param.input, param.output, param.batch_size, param.num_heads, param.q_length, param.k_length);
+}
+
+template<typename T>
+__global__ void attention_score_bottom_k(int64_t*   score_ptrs,
+                                        int64_t*    bottom_index_ptrs,
+                                        const int*  window_ptr,
+                                        const int*  bottom_k_ptr,
+                                        const int   group,
+                                        const int   num_heads,
+                                        const int   max_seq_len,
+                                        const int   size_per_head,
+                                        const int   quant_policy)
+{
+    // constexpr int batch_id = blockIdx.x
+    // constexpr int layer_id = threadIdx.x
+    int64_t score_ptr_base = score_ptrs[blockIdx.x];
+    int64_t index_ptr_base = bottom_index_ptrs[blockIdx.x];
+
+    // shape [1, max_seq_len]
+    float* score_ptr = reinterpret_cast<float*>(score_ptr_base) + threadIdx.x * max_seq_len;
+    int* index_ptr = reinterpret_cast<int*>(index_ptr_base) + threadIdx.x * max_seq_len;
+
+    const int window = window_ptr[blockIdx.x];
+    const int bottom_k = bottom_k_ptr[blockIdx.x];
+
+    // get bottom_k index and keep input order, so simple bubble sort
+    for (int i = 0; i < window; ++i) {
+        index_ptr[i] = i;
+    }
+
+    for(int step = 0; step < window - 1; ++step) {
+        for(int i = 0; i < window - step - 1; ++i) {
+            // To sort in descending order, change > to < in this line.
+            if(score_ptr[i] < score_ptr[i + 1]) {
+                // swap if greater is at the rear position
+                int temp = score_ptr[i];
+                score_ptr[i] = score_ptr[i + 1];
+                score_ptr[i + 1] = temp;
+
+                int temp = index_ptr[i];
+                index_ptr[i] = index_ptr[i + 1];
+                index_ptr[i + 1] = temp;
+            }
+        }
+    }
+
+    // for example:
+    // [0,1,2,3,4],7,9 move left with bottom_k=2
+    // get [2,3,4,7,9]
+    for (int i = bottom_k; i < window + 128; ++i) {
+        score_ptr[i - bottom_k] = score[i]; 
+    }
+}
+
+// template<typename T>
+// struct AttentionScoreSortParam {
+//     // shape [batch_size, layer_num, 1, max_seq_len]
+//     int64_t* score_ptrs = nullptr;
+//     // shape [batch_size, layer_num, 128]
+//     int64_t* bottom_index_ptrs = nullptr;
+
+//     // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
+//     int64_t* k_cache_ptrs = nullptr;
+//     int64_t* v_cache_ptrs = nullptr;
+
+//     // shape [batch_size], value < 128
+//     int* window_ptr     = nullptr;
+//     // shape [batch_size], value < 128
+//     int* bottom_k_device_ptr   = nullptr;
+//     int* bottom_k_host_ptr = nullptr;
+//     int group       = 0;
+
+//     int batch_size  = 0;
+//     int layer_num   = 0;
+    
+//     int num_heads   = 0;
+//     int max_seq_len = 0;
+//     int size_per_head = 0;
+
+//     int quant_policy = 0;
+// };
+
+// shape [head_num_, max_seq_len_, size_per_head_] 
+template<typename T>
+void removeOrderedIndicesAsync(void* k_ptr, void* v_ptr, int window, int bottom_k, int elem_size, const std::vector<int>& indexes, const AttentionScoreSortParam<T>& param, cudaStream_t stream) {
+    // keep index ascend
+    const int head_stride = param.max_seq_len * param.size_per_head;
+    for (int head_id = 0; head_id < param.num_heads; ++head_id) {
+        int indexToRemove = 0;
+        int shift = 0;
+
+        void* k_base = k_ptr + elem_size * param.max_seq_len * param.size_per_head;
+        void* v_base = v_ptr + elem_size * param.max_seq_len * param.size_per_head;
+
+        for (int i = 0; i < window; ++i) {
+            if (indexToRemove < indexes.size() && i == indexes[indexToRemove]) {
+                ++shift;
+                ++indexToRemove;
+            } else if (shift > 0) {
+                // 将当前元素移到正确的位置
+                // arr[i-shift] = arr[i];
+
+                const int from_offset = elem_size * param.size_per_head * i;
+                const int to_offset = elem_size * param.size_per_head * (i-shift);
+
+                check_cuda_error(cudaMemCpyAsync(k_base+to_offset, k_base+from_offset, param.size_per_head * elem_size, cudaMemcpyDeviceToDevice, stream));
+                check_cuda_error(cudaMemCpyAsync(v_base+to_offset, v_base+from_offset, param.size_per_head * elem_size, cudaMemcpyDeviceToDevice, stream));
+            }
+        }
+
+        // move lastest 128 kv cache with step bottom_k
+        int start_idx = window;
+        const int end_idx = window + 128;
+        for(int start_idx = window; start_idx < end_idx; start_idx += bottom_k) {
+            const int chunk = min(start_idx + bottom_k, end_idx) - start_idx;
+
+            const int from_offset = elem_size * param.size_per_head * start_idx;
+            const int to_offset = elem_size * param.size_per_head * (start_idx - bottom_k);
+
+            check_cuda_error(cudaMemCpyAsync(k_base+to_offset, k_base+from_offset, chunk * param.size_per_head * elem_size, cudaMemcpyDeviceToDevice, stream));
+            check_cuda_error(cudaMemCpyAsync(v_base+to_offset, v_base+from_offset, chunk * param.size_per_head * elem_size, cudaMemcpyDeviceToDevice, stream));
+        }
+    }
+}
+
+template<typename T>
+void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
+    dim3 grid(param.batch_size), block(param.layer_num);
+    attention_score_bottom_k<<<grid, block, 0, stream>>>(param.score_ptrs, param.bottom_index_ptrs,
+                                                         param.window_device_ptr, param.bottom_k_device_ptr, 
+                                                         param.group, param.num_heads, param.max_seq_length, param.size_per_head, param.quant_policy);
+
+    // shape [head_num, max_seq_len, size_per_head]
+    int kv_elem_size = sizeof(T);
+    if (quant_policy & QuantPolicy::kCacheKVInt8) {
+        kv_elem_size = sizeof(int8_t);
+    }
+
+    std::vector<int> indexes;
+    check_cuda_error(cudaStreamSynchronize(stream));
+
+    for(int batch_id = 0; batch_id < param.batch_size; ++batch_id) {
+        const int bottom_k = param.bottom_k_host_ptr[batch_id];
+        const int window = param.window_host_ptr[batch_id];
+        indexes.resize(bottom_k);
+        int32_t* bottom_index_base = reinterpret_cast<int32_t*>(param.bottom_index_ptrs[i]);
+        int64_t k_ptr_base = k_ptrs[batch_id];
+        int64_t v_ptr_base = v_ptrs[batch_id];
+
+        for (int layer_id; layer_id < param.layer_num; ++layer_id) {
+            int32_t* from_ptr = bottom_index_base + layer_id * (param.max_seq_len / 2);
+            check_cuda_error(cudaMemCpy(indexes.data(), from_ptr, sizeof(int) * bottom_k, cudaMemcpyDeviceToHost));
+
+            // let's move out some kv cache
+            const int kv_byte_offset = kv_elem_size * layer_id * param.num_heads * param.size_per_head * param.max_seq_len;
+            void* k_ptr = reinterpret_cast<void*>(k_ptr_base) + kv_byte_offset;
+            void* v_ptr = reinterpret_cast<void*>(v_ptr_base) + kv_byte_offset;
+
+            std::sort(indexes.begin(), indexes.end());
+            removeOrderedIndicesAsync(k_ptr, v_ptr, window, bottom_k, kv_elem_size, indexes, param, stream);
+        }
+    }
+}
+
 template<typename T>
 __global__ void transpose(const T*     src,
                           T*           dst,

@@ -55,6 +55,54 @@ struct MaskedSoftmaxParam {
     const T* linear_bias_slopes = nullptr;  // (head_num,), optional
 };
 
+
+
+template<typename T>
+struct AttentionScoreSumParam {
+    const T*  input  = nullptr;
+    float*  output   = nullptr;
+    int batch_size  = 0;
+    int q_length    = 0;
+    int k_length    = 0;
+    int num_heads   = 0;
+};
+
+template<typename T>
+void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stream);
+
+template<typename T>
+struct AttentionScoreSortParam {
+    // shape [batch_size, layer_num, 1, max_seq_len]
+    int64_t* score_ptrs = nullptr;
+    // shape [batch_size, layer_num, 128]
+    int64_t* bottom_index_ptrs = nullptr;
+
+    // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
+    int64_t* k_cache_ptrs = nullptr;
+    int64_t* v_cache_ptrs = nullptr;
+
+    // shape [batch_size], value < 128
+    int* window_device_ptr     = nullptr;
+    int* window_host_ptr     = nullptr;
+
+    // shape [batch_size], value < 128
+    int* bottom_k_device_ptr   = nullptr;
+    int* bottom_k_host_ptr = nullptr;
+    int group       = 0;
+
+    int batch_size  = 0;
+    int layer_num   = 0;
+    
+    int num_heads   = 0;
+    int max_seq_len = 0;
+    int size_per_head = 0;
+
+    int quant_policy = 0;
+};
+
+template<typename T>
+void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream);
+
 template<typename T, typename T_IN>
 void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream);
 
