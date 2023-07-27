@@ -97,9 +97,11 @@ private:
 
     uint64_t* k_cache_ptr_buf_{};
     uint64_t* v_cache_ptr_buf_{};
-    uint64_t* attn_sum_ptr_buf_{};
-    int* kv_cache_trim_window_{};
-    int* kv_cache_trim_bottom_k_{};
+    uint64_t* attn_sum_ptrs_{};
+    uint64_t* trim_score_ptrs_{};
+    uint64_t* trim_index_ptrs_{};
+    int* trim_window_ptr_{};
+    int* trim_bottom_k_ptr_{};
 
     float* logits_buf_{};        // combined logits
     float* local_logits_buf_{};  // tensor parallel local logits
@@ -121,7 +123,7 @@ private:
     bool*      h_finished_buf_{};
     uintptr_t* h_k_cache_ptr_buf_{};
     uintptr_t* h_v_cache_ptr_buf_{};
-    uintptr_t* h_attn_sum_ptr_buf_{};
+    uintptr_t* h_attn_sum_ptrs_{};
     uint32_t*  h_seq_limit_len_{};
 
     int*      stop_words_buf_{};  // [batch_size, 2, kMaxStopWordsLen]

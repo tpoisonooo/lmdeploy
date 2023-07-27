@@ -782,13 +782,14 @@ void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stre
 
 template<typename T>
 __global__ void attention_score_bottom_k(int64_t*   score_ptrs,
-                                         int64_t*   bottom_index_ptrs,
+                                         int64_t*   index_ptrs,
                                         const int*  window_ptr,
                                         const int*  bottom_k_ptr,
                                         const int   group,
                                         const int   num_heads,
                                         const int   max_seq_len,
                                         const int   size_per_head,
+                                        const int   stride,
                                         const int   quant_policy)
 {
     // constexpr int batch_id = blockIdx.x
@@ -797,9 +798,9 @@ __global__ void attention_score_bottom_k(int64_t*   score_ptrs,
     // score_ptr shape [1, max_seq_len]
     // TODO:
     // const int max_trim_length = max_seq_len / 2 + 128;
-    float* score_ptr = reinterpret_cast<float*>(score_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
-    // int* index_ptr = reinterpret_cast<int*>(bottom_index_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
-    int* index_ptr = reinterpret_cast<int*>(bottom_index_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
+    float* score_ptr = reinterpret_cast<float*>(score_ptrs[blockIdx.x]) + threadIdx.x * param.stride;
+    // int* index_ptr = reinterpret_cast<int*>(index_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
+    int* index_ptr = reinterpret_cast<int*>(index_ptrs[blockIdx.x]) + threadIdx.x * param.stride;
 
     const int window = window_ptr[blockIdx.x];
     const int bottom_k = bottom_k_ptr[blockIdx.x];
@@ -883,9 +884,10 @@ template void invokeCacheKVTrim(AttentionScoreSortParam<half>& param, cudaStream
 template<typename T>
 void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
     dim3 grid(param.batch_size), block(param.layer_num);
-    attention_score_bottom_k<<<grid, block, 0, stream>>>(param.score_ptrs, param.bottom_index_ptrs,
+    attention_score_bottom_k<<<grid, block, 0, stream>>>(param.score_device_ptrs, param.index_device_ptrs,
                                                          param.window_device_ptr, param.bottom_k_device_ptr, 
-                                                         param.group, param.num_heads, param.max_seq_length, param.size_per_head, param.quant_policy);
+                                                         param.group, param.num_heads, param.max_seq_length, param.size_per_head, param.stride,
+                                                         param.quant_policy);
     check_cuda_error(cudaStreamSynchronize(stream));
 
     // shape [head_num, max_seq_len, size_per_head]
@@ -901,8 +903,8 @@ void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
         const int window = param.window_host_ptr[batch_id];
         indexes.resize(bottom_k);
         int32_t* bottom_index_base = reinterpret_cast<int32_t*>(param.bottom_index_ptrs[i]);
-        int64_t k_ptr_base = k_ptrs[batch_id];
-        int64_t v_ptr_base = v_ptrs[batch_id];
+        int64_t k_ptr_base = param.k_ptrs[batch_id];
+        int64_t v_ptr_base = param.v_ptrs[batch_id];
 
         for (int layer_id = 0; layer_id < param.layer_num; ++layer_id) {
             int32_t* from_ptr = bottom_index_base + layer_id * (param.max_seq_len / 2);

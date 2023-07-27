@@ -171,9 +171,12 @@ void LlamaBatch<T>::allocateBuffer(size_t batch_size, size_t session_len)
 
     k_cache_ptr_buf_ = (uint64_t*)allocator_->reMalloc(k_cache_ptr_buf_, sizeof(uint64_t) * batchxbeam);
     v_cache_ptr_buf_ = (uint64_t*)allocator_->reMalloc(v_cache_ptr_buf_, sizeof(uint64_t) * batchxbeam);
-    attn_sum_ptr_buf_ = (uint64_t*)allocator_->reMalloc(attn_sum_ptr_buf_, sizeof(uint64_t) * batchxbeam);
-    kv_cache_trim_window_ = (int*)allocator_->reMalloc(kv_cache_trim_window_, 2 * sizeof(int) * batchxbeam);
-    kv_cache_trim_bottom_k_ = kv_cache_trim_window_ + batchxbeam;
+    attn_sum_ptrs_   = (uint64_t*)allocator_->reMalloc(attn_sum_ptrs_, 3 * sizeof(uint64_t) * batchxbeam);
+    trim_score_ptrs_ = attn_sum_ptrs_ + batchxbeam;
+    trim_index_ptrs_ = trim_score_ptrs_ + batchxbeam;
+
+    trim_window_ptr_ = (int*)allocator_->reMalloc(trim_window_ptr_, 2 * sizeof(int) * batchxbeam);
+    trim_bottom_k_ptr_ = trim_window_ptr_ + batchxbeam;
 
     logits_buf_       = (float*)allocator_->reMalloc(logits_buf_, sizeof(float) * batchxbeam * vocab_size, false);
     local_logits_buf_ = (float*)allocator_->reMalloc(local_logits_buf_, sizeof(float) * batchxbeam * vocab_size, false);
@@ -232,8 +235,8 @@ void LlamaBatch<T>::allocatePersistantBuffer(size_t max_batch_size)
             (uintptr_t*)allocator_->reMalloc(h_k_cache_ptr_buf_, sizeof(uintptr_t) * max_batch_size, true, true);
         h_v_cache_ptr_buf_ =
             (uintptr_t*)allocator_->reMalloc(h_v_cache_ptr_buf_, sizeof(uintptr_t) * max_batch_size, true, true);
-        h_attn_sum_ptr_buf_ =
-            (uintptr_t*)allocator_->reMalloc(h_attn_sum_ptr_buf_, sizeof(uintptr_t) * max_batch_size, true, true);
+        h_attn_sum_ptrs_ =
+            (uintptr_t*)allocator_->reMalloc(h_attn_sum_ptrs_, sizeof(uintptr_t) * max_batch_size, true, true);
         h_finished_buf_ = (bool*)allocator_->reMalloc(h_finished_buf_, sizeof(bool) * max_batch_size, false, true);
         h_seq_limit_len_ =
             (uint32_t*)allocator_->reMalloc(h_seq_limit_len_, sizeof(uint32_t) * max_batch_size, false, true);
@@ -263,8 +266,8 @@ void LlamaBatch<T>::freeBuffer()
 
         allocator_->free((void**)&k_cache_ptr_buf_);
         allocator_->free((void**)&v_cache_ptr_buf_);
-        allocator_->free((void**)&attn_sum_ptr_buf_);
-        allocator_->free((void**)&kv_cache_trim_window_);
+        allocator_->free((void**)&attn_sum_ptrs_);
+        allocator_->free((void**)&trim_window_ptr_);
 
         allocator_->free((void**)&logits_buf_);
         allocator_->free((void**)&local_logits_buf_);
@@ -286,7 +289,7 @@ void LlamaBatch<T>::freeBuffer()
         allocator_->free((void**)&h_sequence_lengths_, true);
         allocator_->free((void**)&h_k_cache_ptr_buf_, true);
         allocator_->free((void**)&h_v_cache_ptr_buf_, true);
-        allocator_->free((void**)&h_attn_sum_ptr_buf_, true);
+        allocator_->free((void**)&h_attn_sum_ptrs_, true);
         allocator_->free((void**)&h_seq_limit_len_, true);
         allocator_->free((void**)&h_finished_buf_, true);
 
@@ -413,7 +416,7 @@ void LlamaBatch<T>::initializeGeneration()
     check_cuda_error(cudaMemcpyAsync(
         v_cache_ptr_buf_, h_v_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
     check_cuda_error(cudaMemcpyAsync(
-        attn_sum_ptr_buf_, h_attn_sum_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
+        attn_sum_ptrs_, h_attn_sum_ptrs_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
     
     check_cuda_error(
         cudaMemcpyAsync(sequence_lengths_, context_length_buf_, sizeof(int) * batch_size_, cudaMemcpyDefault, stream_));
@@ -496,7 +499,7 @@ bool LlamaBatch<T>::generate()
     llama_->decoderForward(decoder_output_buf_,
                            k_cache_ptr_buf_,
                            v_cache_ptr_buf_,
-                           attn_sum_ptr_buf_,
+                           attn_sum_ptrs_,
                            decoder_input_buf_,
                            sequence_lengths_,
                            total_padding_count_,
@@ -663,25 +666,30 @@ bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
     }
 
     if (not ptrs.empty()) {
-        cudaMemcpyAsync(kv_cache_trim_window_, windows.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_);
-        cudaMemcpyAsync(kv_cache_trim_bottom_k_, bottoms_k_.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_);
+
+        const int batch_size = infer_requests.size();
+        check_cuda_error(cudaMemcpyAsync(trim_score_ptrs_, score_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
+        check_cuda_error(cudaMemcpyAsync(trim_index_ptrs_, bottom_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
+        check_cuda_error(cudaMemcpyAsync(trim_window_ptr_, windows.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_));
+        check_cuda_error(cudaMemcpyAsync(trim_bottom_k_ptr_, bottoms_k_.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_));
         check_cuda_error(cudaStreamSynchronize(stream_));
 
         AttentionScoreSortParam param;
-        param.score_ptrs = (int64_t*)score_ptrs.data();
-        param.bottom_index_ptrs = (int64_t*)bottom_ptrs.data();
-        param.k_cache_ptrs = (int64_t*)k_ptrs.data();
-        param.v_cache_ptrs = (int64_t*)v_ptrs.data();
+        param.score_device_ptrs = trim_score_ptrs_;
+        param.index_device_ptrs = trim_index_ptrs_;
+        param.k_ptrs = (int64_t*)k_ptrs.data();
+        param.v_ptrs = (int64_t*)v_ptrs.data();
 
-        param.window_device_ptr = kv_cache_trim_window_;
+        param.window_device_ptr = trim_window_ptr_;
         param.window_host_ptr = (int*)windows.data();
-        param.bottom_k_device_ptr = kv_cache_trim_bottom_k_;
+        param.bottom_k_device_ptr = trim_bottom_k_ptr_;
         param.bottom_k_host_ptr = (int*)bottoms_k_.data();
-        param.batch_size = infer_requests.size();
+        param.batch_size = batch_size;
         param.layer_num = llama_->num_layer_;
         param.num_heads = llama_->head_num_;
         param.size_per_head = llama_->size_per_head_;
         param.max_seq_len = llama_->session_len;
+        param.stride = llama_->session_len / 2 + 128;
         invokeCacheKVTrim(param, stream_);
     }
     check_cuda_error(cudaStreamSynchronize(stream_));
@@ -870,7 +878,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
 
         h_k_cache_ptr_buf_[i] = (uint64_t)seq.k_cache;
         h_v_cache_ptr_buf_[i] = (uint64_t)seq.v_cache;
-        h_attn_sum_ptr_buf_[i] = (uint64_t)seq.attn_score_sum;
+        h_attn_sum_ptrs_[i] = (uint64_t)seq.attn_score_sum;
     }
 
     const int max_context_len = *std::max_element(h_context_length_buf_ + batch_size_, h_context_length_buf_ + count);
@@ -890,7 +898,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
     check_cuda_error(cudaMemcpyAsync(
         v_cache_ptr_buf_, h_v_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
     check_cuda_error(cudaMemcpyAsync(
-        attn_sum_ptr_buf_, h_attn_sum_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
+        attn_sum_ptrs_, h_attn_sum_ptrs_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
 
     if (llama_->tensor_para_.rank_ == 0) {
         TM_LOG_INFO("[init] infer_request_count = %d", (int)infer_request_count);
@@ -971,7 +979,7 @@ void LlamaBatch<T>::contextDecode()
                 llama_->contextDecode(nullptr,
                                       k_cache_ptr_buf_ + offset,
                                       v_cache_ptr_buf_ + offset,
-                                      attn_sum_ptr_buf_ + offset,
+                                      attn_sum_ptrs_ + offset,
                                       context_decoder_input_buf_,
                                       nullptr,
                                       context_decoder_ids_buf_,
@@ -1081,7 +1089,7 @@ void LlamaBatch<T>::synchronize()
 
                 h_k_cache_ptr_buf_[idx] = h_k_cache_ptr_buf_[i];
                 h_v_cache_ptr_buf_[idx] = h_v_cache_ptr_buf_[i];
-                h_attn_sum_ptr_buf_[idx] = h_attn_sum_ptr_buf_[i];
+                h_attn_sum_ptrs_[idx]   = h_attn_sum_ptrs_[i];
 
                 requests_[idx]   = std::move(requests_[i]);
                 cached_seq_[idx] = std::move(cached_seq_[i]);

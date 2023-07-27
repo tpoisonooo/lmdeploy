@@ -380,8 +380,8 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
         // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
         // to [batch_size, 1, 1, max_k_len]
         AttentionScoreSumParam param;
-        param.input     = qk_buf_;
-        param.output    = attn_sum_ptrs;
+        param.attn_score    = qk_buf_;
+        param.score_sum     = attn_sum_ptrs;
         param.batch_size    = batch_size;
         param.q_length      = max_q_len;
         param.k_length      = max_k_len;
