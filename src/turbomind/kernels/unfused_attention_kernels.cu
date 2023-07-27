@@ -753,40 +753,36 @@ template void invokeAttentionScoreSum(AttentionScoreSumParam<half>& param, cudaS
 template void invokeAttentionScoreSum(AttentionScoreSumParam<float>& param, cudaStream_t stream);
 
 // input shape [batch, num_head, q_size, k_size]
-// ouput shape [batch, 1, k_size]
+// ouput shape [batch, 1, 1, k_size], along with kv cache
 template<typename T>
-__global__ void attention_score_sum(const T*    input,
-                                    float*      output,
+__global__ void attention_score_sum(const T*    input_ptrs,
+                                    float**     output_ptrs,
                                     const int   batch,
                                     const int   num_head,
                                     const int   q,
-                                    const int   k)
+                                    const int   k,
+                                    const int   stride)
 {
-    // Calculate thread ID
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    T* from = input_ptrs + blockIdx.x * num_head * q * k;
+    float* to = output_ptrs[blockIdx.x];
 
-    // Check that thread is within the array bounds
-    if (idx < batch*k) {
-        float sum = 0.0f;
-        for(int i = 0; i < num_head; i++) {
-            for(int j = 0; j < q; j++) {
-                sum += __half2float(input[i*q*k + j*k + idx]);
-            }
+    float sum = 0.f;
+    for (int i = 0; i < num_head; ++i) {
+        for (int j = 0; j < q; ++j) {
+            sum += __half2float(from[i * q * k + j * k + threadIdx.x]);
         }
-        output[idx] = sum / num_head;
     }
+    to[threadIdx.x] = sum / num_head;
 }
 
 template<typename T>
-void invokeAttentionScoreSum(AttentionScoreMeanParam<T>& param, cudaStream_t stream) {
-    int blockSize = 256;
-    dim3 grid(param.batch_size * param.k_length + blockSize - 1) / blockSize;
-    attention_score_sum<<<grid, blockSize, stream>>>(param.input, param.output, param.batch_size, param.num_heads, param.q_length, param.k_length);
+void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stream) {
+    attention_score_sum<<<param.batch_size, param.k_length, 0, stream>>>(param.attn_score, param.score_sum, param.batch_size, param.num_heads, param.q_length, param.k_length, param.stride);
 }
 
 template<typename T>
 __global__ void attention_score_bottom_k(int64_t*   score_ptrs,
-                                        int64_t*    bottom_index_ptrs,
+                                         int64_t*   bottom_index_ptrs,
                                         const int*  window_ptr,
                                         const int*  bottom_k_ptr,
                                         const int   group,
@@ -797,72 +793,46 @@ __global__ void attention_score_bottom_k(int64_t*   score_ptrs,
 {
     // constexpr int batch_id = blockIdx.x
     // constexpr int layer_id = threadIdx.x
-    int64_t score_ptr_base = score_ptrs[blockIdx.x];
-    int64_t index_ptr_base = bottom_index_ptrs[blockIdx.x];
 
-    // shape [1, max_seq_len]
-    float* score_ptr = reinterpret_cast<float*>(score_ptr_base) + threadIdx.x * max_seq_len;
-    int* index_ptr = reinterpret_cast<int*>(index_ptr_base) + threadIdx.x * max_seq_len;
+    // score_ptr shape [1, max_seq_len]
+    // TODO:
+    // const int max_trim_length = max_seq_len / 2 + 128;
+    float* score_ptr = reinterpret_cast<float*>(score_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
+    // int* index_ptr = reinterpret_cast<int*>(bottom_index_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
+    int* index_ptr = reinterpret_cast<int*>(bottom_index_ptrs[blockIdx.x]) + threadIdx.x * max_seq_len;
 
     const int window = window_ptr[blockIdx.x];
     const int bottom_k = bottom_k_ptr[blockIdx.x];
 
     // get bottom_k index and keep input order, so simple bubble sort
     for (int i = 0; i < window; ++i) {
-        index_ptr[i] = i;
+        index_ptr[i] = 0;
     }
 
-    for(int step = 0; step < window - 1; ++step) {
-        for(int i = 0; i < window - step - 1; ++i) {
-            // To sort in descending order, change > to < in this line.
-            if(score_ptr[i] < score_ptr[i + 1]) {
-                // swap if greater is at the rear position
-                int temp = score_ptr[i];
-                score_ptr[i] = score_ptr[i + 1];
-                score_ptr[i + 1] = temp;
+    for (int k = 0; k < bottom_k; ++k) {
+        float low_score = score_ptr[k];
+        float low_index = k;
 
-                int temp = index_ptr[i];
-                index_ptr[i] = index_ptr[i + 1];
-                index_ptr[i + 1] = temp;
+        for (int i = k+1; i < window; ++i) {
+            if (index_ptr[i] == 0 and score_ptr[i] < low_score) {
+                low_score = score_ptr[i];
+                low_index = i;
             }
         }
+
+        index_ptr[low_index] = 1;
     }
 
-    // for example:
-    // [0,1,2,3,4],7,9 move left with bottom_k=2
-    // get [2,3,4,7,9]
-    for (int i = bottom_k; i < window + 128; ++i) {
-        score_ptr[i - bottom_k] = score[i]; 
+    // convert index table to seqence, for example:
+    // input top-2 [0,0,0,1,1,0]
+    // output [3,4]
+    int index = 0;
+    for (int i = 0; i < window; ++i) {
+        if (index_ptr[i] == 1) {
+            index_ptr[index++] = i;
+        }
     }
 }
-
-// template<typename T>
-// struct AttentionScoreSortParam {
-//     // shape [batch_size, layer_num, 1, max_seq_len]
-//     int64_t* score_ptrs = nullptr;
-//     // shape [batch_size, layer_num, 128]
-//     int64_t* bottom_index_ptrs = nullptr;
-
-//     // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
-//     int64_t* k_cache_ptrs = nullptr;
-//     int64_t* v_cache_ptrs = nullptr;
-
-//     // shape [batch_size], value < 128
-//     int* window_ptr     = nullptr;
-//     // shape [batch_size], value < 128
-//     int* bottom_k_device_ptr   = nullptr;
-//     int* bottom_k_host_ptr = nullptr;
-//     int group       = 0;
-
-//     int batch_size  = 0;
-//     int layer_num   = 0;
-    
-//     int num_heads   = 0;
-//     int max_seq_len = 0;
-//     int size_per_head = 0;
-
-//     int quant_policy = 0;
-// };
 
 // shape [head_num_, max_seq_len_, size_per_head_] 
 template<typename T>
@@ -907,12 +877,16 @@ void removeOrderedIndicesAsync(void* k_ptr, void* v_ptr, int window, int bottom_
     }
 }
 
+template void invokeCacheKVTrim(AttentionScoreSortParam<float>& param, cudaStream_t stream);
+template void invokeCacheKVTrim(AttentionScoreSortParam<half>& param, cudaStream_t stream);
+
 template<typename T>
 void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
     dim3 grid(param.batch_size), block(param.layer_num);
     attention_score_bottom_k<<<grid, block, 0, stream>>>(param.score_ptrs, param.bottom_index_ptrs,
                                                          param.window_device_ptr, param.bottom_k_device_ptr, 
                                                          param.group, param.num_heads, param.max_seq_length, param.size_per_head, param.quant_policy);
+    check_cuda_error(cudaStreamSynchronize(stream));
 
     // shape [head_num, max_seq_len, size_per_head]
     int kv_elem_size = sizeof(T);
@@ -921,7 +895,6 @@ void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
     }
 
     std::vector<int> indexes;
-    check_cuda_error(cudaStreamSynchronize(stream));
 
     for(int batch_id = 0; batch_id < param.batch_size; ++batch_id) {
         const int bottom_k = param.bottom_k_host_ptr[batch_id];
@@ -931,7 +904,7 @@ void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream) {
         int64_t k_ptr_base = k_ptrs[batch_id];
         int64_t v_ptr_base = v_ptrs[batch_id];
 
-        for (int layer_id; layer_id < param.layer_num; ++layer_id) {
+        for (int layer_id = 0; layer_id < param.layer_num; ++layer_id) {
             int32_t* from_ptr = bottom_index_base + layer_id * (param.max_seq_len / 2);
             check_cuda_error(cudaMemCpy(indexes.data(), from_ptr, sizeof(int) * bottom_k, cudaMemcpyDeviceToHost));
 

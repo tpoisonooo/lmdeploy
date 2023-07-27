@@ -57,7 +57,7 @@ void LlamaContextAttentionLayer<T>::allocateBuffer(size_t batch_size,
             k_cache_buf_, 2 * sizeof(T) * batch_size * local_head_num_ * max_k_len * size_per_head_, true);
         v_cache_buf_ = k_cache_buf_ + batch_size * local_head_num_ * max_k_len * size_per_head_;
 
-        attention_score_sum_buf_ = (float*)allocator_->reMalloc(attention_score_sum_buf_, sizeof(float) * batch_size * local_head_num_ * 1280, true);
+        // attention_score_sum_buf_ = (float*)allocator_->reMalloc(attention_score_sum_buf_, sizeof(float) * batch_size * local_head_num_ * 1280, true);
 
         qk_buf_ =
             (T*)allocator_->reMalloc(qk_buf_, sizeof(T) * batch_size * local_head_num_ * max_q_len * max_k_len, true);
@@ -207,6 +207,7 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
     if (use_fmha_) {
         fusedMultiHeadAttention(k_cache_ptrs,
                                 v_cache_ptrs,
+                                attn_sum_ptrs,
                                 layer_offset,
                                 attention_mask,
                                 cu_seqlens,
@@ -218,7 +219,8 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
     else {
         unfusedMultiHeadAttention(k_cache_ptrs,
                                   v_cache_ptrs,
-                                  layer_offset,
+                                  attn_sum_ptrs,
+                                  layer_id,
                                   attention_mask,
                                   padding_offset,
                                   context_length,
@@ -303,6 +305,8 @@ void LlamaContextAttentionLayer<T>::fusedMultiHeadAttention(T**    key_cache_ptr
 template<typename T>
 void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_cache_ptrs,
                                                               T**          val_cache_ptrs,
+                                                              float**      attn_sum_ptrs,
+                                                              size_t       layer_id,
                                                               size_t       cache_layer_offset,
                                                               const T*     attention_mask,
                                                               const int*   padding_offset,
@@ -315,6 +319,7 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
                                                               int          quant,
                                                               const float* kv_scale)
 {
+    const int cache_layer_offset = layer_id * local_head_num_ * max_seq_len * size_per_head_;
     // key_cache [B, H, S[:t+s], D/x, x] -> [B, H, t+s, D]
     // val_cache [B, H, S[:t+s], D/x, x] -> [B, H, t+s, D]
     invokeTransposeKVCache(k_cache_buf_,
@@ -373,14 +378,16 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
     if (not use_fmha_ and (quant_policy_ & QuantPolicy::kCacheKVTrim)) {
         // sum attention_score
         // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
-        // to [batch_size, local_head_num, 1, max_k_len]
-        AttentionScoreMeanParam param;
+        // to [batch_size, 1, 1, max_k_len]
+        AttentionScoreSumParam param;
         param.input     = qk_buf_;
-        param.output    = attention_score_sum;
+        param.output    = attn_sum_ptrs;
         param.batch_size    = batch_size;
         param.q_length      = max_q_len;
         param.k_length      = max_k_len;
         param.num_heads     = local_head_num_;
+        param.stride        = max_seq_len / 2 + 128; 
+        param.layer_id      = layer_id;
         invokeAttentionScoreSum(param, stream_);
     }
 

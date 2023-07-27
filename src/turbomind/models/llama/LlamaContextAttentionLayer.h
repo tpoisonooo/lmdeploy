@@ -79,7 +79,7 @@ public:
     void unfusedMultiHeadAttention(T**          key_cache_ptrs,
                                    T**          val_cache_ptrs,
                                    float**      attn_sum_ptrs,
-                                   size_t       cache_layer_offset,
+                                   size_t       layer_id,
                                    const T*     attention_mask,
                                    const int*   padding_offset,
                                    const int*   context_length,

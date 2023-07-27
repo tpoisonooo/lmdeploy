@@ -55,16 +55,18 @@ struct MaskedSoftmaxParam {
     const T* linear_bias_slopes = nullptr;  // (head_num,), optional
 };
 
-
-
 template<typename T>
 struct AttentionScoreSumParam {
-    const T*  input  = nullptr;
-    float*  output   = nullptr;
+    // attention score shape [batch, layer_num, num_head, q, k]
+    const T* attn_score = nullptr;
+    // reduce sum to tensor with shape [batch, layer_num, 1, 1, k] which is part of `struct Sequence`
+    float** score_sum   = nullptr;
     int batch_size  = 0;
     int q_length    = 0;
     int k_length    = 0;
     int num_heads   = 0;
+    int stride      = 0;
+    int layerid     = 0;
 };
 
 template<typename T>
@@ -72,9 +74,9 @@ void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stre
 
 template<typename T>
 struct AttentionScoreSortParam {
-    // shape [batch_size, layer_num, 1, max_seq_len]
+    // shape [batch_size, layer_num, 1, 1, max_seq_len]
     int64_t* score_ptrs = nullptr;
-    // shape [batch_size, layer_num, 128]
+    // shape [batch_size, layer_num, window], window = cur_input_seq_len - GROUP
     int64_t* bottom_index_ptrs = nullptr;
 
     // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
@@ -82,12 +84,12 @@ struct AttentionScoreSortParam {
     int64_t* v_cache_ptrs = nullptr;
 
     // shape [batch_size], value < 128
-    int* window_device_ptr     = nullptr;
-    int* window_host_ptr     = nullptr;
+    int* window_device_ptr  = nullptr;
+    int* window_host_ptr    = nullptr;
 
     // shape [batch_size], value < 128
-    int* bottom_k_device_ptr   = nullptr;
-    int* bottom_k_host_ptr = nullptr;
+    int* bottom_k_device_ptr    = nullptr;
+    int* bottom_k_host_ptr      = nullptr;
     int group       = 0;
 
     int batch_size  = 0;
