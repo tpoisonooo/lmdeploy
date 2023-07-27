@@ -31,7 +31,7 @@ void* LlamaCacheManager::allocate(bool is_preallocte)
     }
     else if (entry_count_ < max_entry_count_) {
         const auto   alloc_count     = std::min(chunk_size_, max_entry_count_ - entry_count_);
-        const size_t entry_byte_size = 2 * cache_byte_size_ + attn_sum_byte_size_ + attn_sum_bottom_size_;  // 2 for k,v + attn_score_sum + attn_score_sum_low_part
+        const size_t entry_byte_size = 2 * cache_byte_size_ + attn_sum_byte_size_ + attn_sum_index_size_;  // 2 for k,v + attn_score_sum + low_score_index
 
         if (rank_ == 0) {
             TM_LOG_INFO("[LlamaCacheManager][allocate] malloc %d", (int)alloc_count);
@@ -81,7 +81,7 @@ auto LlamaCacheManager::create(uint64_t id, cudaStream_t stream) -> Sequence
     }
 
     const auto mem_ptr = (uint8_t*)allocate(false);
-    check_cuda_error(cudaMemsetAsync(mem_ptr, 0, cache_byte_size_ * 2 + attn_sum_byte_size_ + attn_sum_bottom_size_, stream));
+    check_cuda_error(cudaMemsetAsync(mem_ptr, 0, cache_byte_size_ * 2 + attn_sum_byte_size_ + attn_sum_index_size_, stream));
 
     device_cache_.push_back({
         id,

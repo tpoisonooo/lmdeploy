@@ -307,7 +307,6 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
                                                               T**          val_cache_ptrs,
                                                               float**      attn_sum_ptrs,
                                                               size_t       layer_id,
-                                                              size_t       cache_layer_offset,
                                                               const T*     attention_mask,
                                                               const int*   padding_offset,
                                                               const int*   context_length,
