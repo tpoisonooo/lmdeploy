@@ -66,7 +66,7 @@ struct AttentionScoreSumParam {
     int k_length    = 0;
     int num_heads   = 0;
     int stride      = 0;
-    int layer_id     = 0;
+    int layer_id    = 0;
 };
 
 template<typename T>

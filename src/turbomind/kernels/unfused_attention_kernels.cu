@@ -754,11 +754,12 @@ template void invokeAttentionScoreSum(AttentionScoreSumParam<half>& param, cudaS
 template void invokeAttentionScoreSum(AttentionScoreSumParam<float>& param, cudaStream_t stream);
 
 // input shape [batch, num_head, q_size, k_size]
-// ouput shape [batch, 1, 1, k_size], along with kv cache
+// ouput shape [batch, layer_id, 1, 1, k_size], along with kv cache
 template<typename T>
 __global__ void attention_score_sum(T*          input_ptrs,
                                     float**     output_ptrs,
                                     const int   batch,
+                                    const int   layer_id,
                                     const int   num_head,
                                     const int   q,
                                     const int   k,
@@ -773,12 +774,16 @@ __global__ void attention_score_sum(T*          input_ptrs,
             sum += __half2float(from[i * q * k + j * k + threadIdx.x]);
         }
     }
-    to[threadIdx.x] = sum / num_head;
+    
+    to[layer_id * stride + threadIdx.x] += sum / num_head;
 }
 
 template<typename T>
 void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stream) {
-    attention_score_sum<<<param.batch_size, param.k_length, 0, stream>>>(param.attn_score, param.score_sum, param.batch_size, param.num_heads, param.q_length, param.k_length, param.stride);
+    attention_score_sum<<<param.batch_size, param.k_length, 0, stream>>>(
+        param.attn_score, param.score_sum,
+        param.batch_size, param.layer_id, param.num_heads, param.q_length, param.k_length,
+        param.stride);
 }
 
 __global__ void attention_score_bottom_k(uint64_t*   score_ptrs,

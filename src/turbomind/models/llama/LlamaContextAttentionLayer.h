@@ -27,6 +27,84 @@
 #include "src/turbomind/utils/nccl_utils.h"
 
 namespace turbomind {
+struct ScopeDebugTensor {
+    // a tensor to copy gpu fp16 data to cpu, convert to fp32 format for debug value
+    ScopeDebugTensor() = delete;
+
+    ScopeDebugTensor(const ScopeDebugTensor&) = delete;
+
+    ScopeDebugTensor(ScopeDebugTensor&&) = delete; 
+
+    ScopeDebugTensor& operator=(const ScopeDebugTensor& other) = delete;
+
+    ScopeDebugTensor& operator=(ScopeDebugTensor&& other) noexcept = delete;
+
+    void init(const void* _gpu_data, const DataType _data_type, const size_t _size) {
+        void *cpu_data = nullptr;
+        switch (_data_type)
+        {
+        case DataType::TYPE_FP16:
+        {
+            const int byte_size = _size * sizeof(float);
+            cpu_data = std::aligned_alloc(64, byte_size);
+            memset(cpu_data, 0, byte_size);
+
+            half* from = reinterpret_cast<half*>(cpu_data) + _size;
+            cudaMemcpy(from, _gpu_data, byte_size / 2, cudaMemcpyDeviceToHost);
+            float* to = reinterpret_cast<float*>(cpu_data);
+            for (size_t i = 0; i < _size; ++i) {
+                to[i] = __half2float(from[i]);
+            }
+        }
+            break;
+        case DataType::TYPE_FP32:
+        {
+            const int byte_size = _size * sizeof(float);
+            cpu_data = std::aligned_alloc(64, byte_size);
+            memset(cpu_data, 0, byte_size);
+
+            cudaMemcpy(cpu_data, _gpu_data, byte_size, cudaMemcpyDeviceToHost);
+        }
+            break;
+        case DataType::TYPE_INT8:
+        {
+            const int byte_size = _size * sizeof(int8_t);
+            cpu_data = std::aligned_alloc(64, byte_size);
+            memset(cpu_data, 0, byte_size);
+
+            cudaMemcpy(cpu_data, _gpu_data, byte_size, cudaMemcpyDeviceToHost);
+        }
+            break;
+        default:
+            break;
+        }
+
+        cpu_datas.push_back(cpu_data);
+    }
+
+    ScopeDebugTensor(const void* _gpu_data, const DataType _data_type, const size_t _size) {
+        init(_gpu_data, _data_type, _size);
+    }
+
+    ScopeDebugTensor(float** _gpu_data_ptrs, const DataType _data_type, const size_t _ptr_size, const size_t _data_size) {
+        std::vector<float*> ptrs;
+        ptrs.resize(_ptr_size);
+        cudaMemcpy(ptrs.data(), _gpu_data_ptrs, sizeof(float*) * _ptr_size, cudaMemcpyDeviceToHost);
+        for (auto gpu_addr: ptrs) {
+            init(gpu_addr, _data_type, _data_size);
+        }
+    }
+
+    ~ScopeDebugTensor() {
+        for (auto cpu_data: cpu_datas) {
+            if (cpu_data) {
+                std::free(cpu_data);
+            }
+        }
+    }
+
+    std::vector<void*> cpu_datas{};
+};
 
 template<typename T>
 class LlamaContextAttentionLayer {

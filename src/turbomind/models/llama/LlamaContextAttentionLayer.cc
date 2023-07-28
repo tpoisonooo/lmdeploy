@@ -133,7 +133,6 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
     const int max_seq_len = input_tensors->at("max_seq_len").getVal<int>();
 
     T* attention_out   = output_tensors->at("hidden_features").getPtr<T>();
-
     T* attention_input = input_tensors->at("input_query").getPtr<T>();
     T* attention_mask  = input_tensors->at("attention_mask").getPtr<T>();
 
@@ -360,25 +359,36 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
     //////////////////////////////////////////////
     /// ! masked softmax (kernel asserts k_length <= 4096)
 
-    MaskedSoftmaxParam<T, T> param{};
-    param.attention_score    = qk_buf_;
-    param.qk                 = qk_buf_;
-    param.attention_mask     = attention_mask;
-    param.batch_size         = batch_size;
-    param.q_length           = max_q_len;
-    param.k_length           = max_k_len;
-    param.num_heads          = local_head_num_;
-    param.qk_scale           = qk_scale;
-    param.linear_bias_slopes = nullptr;
-    invokeMaskedSoftmax(param, stream_);
+    MaskedSoftmaxParam<T, T> softmax_param{};
+    softmax_param.attention_score    = qk_buf_;
+    softmax_param.qk                 = qk_buf_;
+    softmax_param.attention_mask     = attention_mask;
+    softmax_param.batch_size         = batch_size;
+    softmax_param.q_length           = max_q_len;
+    softmax_param.k_length           = max_k_len;
+    softmax_param.num_heads          = local_head_num_;
+    softmax_param.qk_scale           = qk_scale;
+    softmax_param.linear_bias_slopes = nullptr;
+    invokeMaskedSoftmax(softmax_param, stream_);
     sync_check_cuda_error();
 
     if (not use_fmha_ and (quant_policy_ & QuantPolicy::kCacheKVTrim)) {
 
-        ScopeDebugTensor debug_score(qk_buf, DataType::TYPE_FP16, batch_size * local_head_num_ * max_q_len * max_k_len);
+        ScopeDebugTensor debug_score(qk_buf_, DataType::TYPE_FP16, batch_size * local_head_num_ * max_q_len * max_k_len);
+        
+        {
+            float softmax_sum = 0.f;
+            float* data_ptr = reinterpret_cast<float*>(debug_score.cpu_datas[0]);
+            for (int i = 0; i < max_k_len; ++i) {
+                softmax_sum += data_ptr[i];
+            }
+            fprintf(stdout, "%f\n", softmax_sum);
+        }
+
         // sum attention_score
         // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
         // to [batch_size, 1, 1, max_k_len]
+
         AttentionScoreSumParam<T> param;
         param.attn_score    = qk_buf_;
         param.score_sum     = attn_sum_ptrs;
@@ -388,10 +398,38 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
         param.num_heads     = local_head_num_;
         param.stride        = max_seq_len / 2 + 128; 
         param.layer_id      = layer_id;
+        {
+            // save attn score to np
+            Tensor t{MemoryType::MEMORY_GPU, DataType::TYPE_FP16, {batch_size, local_head_num_, max_q_len, max_k_len}, qk_buf_};
+            t.saveNpy("/workspace/GitProjects/npy/attn_score.npy");
+        }
+
+        ScopeDebugTensor debug_sum_before(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
+        {
+            float softmax_sum = 0.f;
+            float* data_ptr = reinterpret_cast<float*>(debug_sum_before.cpu_datas[0]);
+            for (int i = 0; i < param.stride; ++i) {
+                softmax_sum += data_ptr[i + layer_id * param.stride];
+            }
+            fprintf(stdout, "%f\n", softmax_sum);
+        }
+
         invokeAttentionScoreSum(param, stream_);
+        sync_check_cuda_error();
 
-        ScopeDebugTensor debug_sum(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
-
+        ScopeDebugTensor debug_sum_after(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
+        {
+            float softmax_sum = 0.f;
+            float* data_ptr = reinterpret_cast<float*>(debug_sum_after.cpu_datas[1]);
+            for (int i = 0; i < param.stride; ++i) {
+                softmax_sum += data_ptr[i + layer_id * param.stride];
+            }
+            fprintf(stdout, "%f\n", softmax_sum);
+            
+            Tensor t{MemoryType::MEMORY_CPU, DataType::TYPE_FP32, {32, max_q_len}, data_ptr};
+            t.saveNpy("/workspace/GitProjects/npy/attn_sum.npy");
+        }
+        fprintf(stdout, " debug ");
     }
 
     //////////////////////////////////////////////
