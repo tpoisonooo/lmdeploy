@@ -69,12 +69,13 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     num_layer_(num_layer),
     vocab_size_(vocab_size),
     rotary_embedding_dim_(rotary_embedding_dim),
+    session_len_(session_len),
     rmsnorm_eps_(norm_eps),
+    quant_policy_(quant_policy),
     start_id_(start_id),
     end_id_(end_id),
     hidden_units_(head_num * size_per_head),
     local_head_num_(head_num / tensor_para.world_size_),
-    weights_(weights),
     tensor_para_(tensor_para),
     stream_(stream),
     cublas_wrapper_(cublas_wrapper),
@@ -82,6 +83,7 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     is_free_buffer_after_forward_(is_free_buffer_after_forward),
     cuda_device_prop_(cuda_device_prop),
     debug_(isDebug()),
+    weights_(weights),
     step_length_(step_length),
     batch_(max_batch_size, max_context_token_num, session_len, this),
     shared_state_(shared_state)
@@ -603,7 +605,7 @@ void LlamaV2<T>::forward(std::unordered_map<std::string, Tensor>*       outputs,
 
     if (rank == 0 && has_error) {
         std::stringstream ss;
-        for (int i = 0; i < error_codes.size(); ++i) {
+        for (size_t i = 0; i < error_codes.size(); ++i) {
             ss << (i ? "" : " ") << error_codes[i];
         }
         throw std::runtime_error(ss.str());

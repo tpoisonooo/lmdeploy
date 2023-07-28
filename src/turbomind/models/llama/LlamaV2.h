@@ -152,6 +152,7 @@ private:
     const size_t num_layer_;
     const size_t vocab_size_;
     const size_t rotary_embedding_dim_;
+    const size_t session_len_;
     float        rmsnorm_eps_ = 1e-6f;
     const int    quant_policy_;
 

@@ -67,7 +67,6 @@ public:
 
     void fusedMultiHeadAttention(T**    key_cache_ptrs,
                                  T**    val_cache_ptrs,
-                                 float**  attn_sum_ptrs,
                                  size_t cache_layer_offset,
                                  T*     attention_mask,
                                  int*   cu_seqlens,

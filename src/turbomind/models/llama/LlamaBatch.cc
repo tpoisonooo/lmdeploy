@@ -2,6 +2,7 @@
 
 #include "src/turbomind/models/llama/LlamaBatch.h"
 #include "src/turbomind/kernels/decoding_kernels.h"
+#include "src/turbomind/kernels/unfused_attention_kernels.h"
 #include "src/turbomind/models/llama/LlamaNcclGuard.h"
 #include "src/turbomind/models/llama/LlamaV2.h"
 #include "src/turbomind/models/llama/Request.h"
@@ -58,7 +59,7 @@ void LlamaBatch<T>::verifyRequests(std::vector<std::shared_ptr<Request>>& stop_r
 
     auto drop_invalid = [](std::vector<std::shared_ptr<Request>>& rs) {
         int count = 0;
-        for (int i = 0; i < rs.size(); ++i) {
+        for (size_t i = 0; i < rs.size(); ++i) {
             if (rs[i]) {
                 rs[count++] = std::move(rs[i]);
             }
@@ -549,7 +550,7 @@ bool LlamaBatch<T>::generate()
         }
 
         std::stringstream scurr;
-        for (int k = 0; k < curr.size(); ++k) {
+        for (size_t k = 0; k < curr.size(); ++k) {
             scurr << std::setw(6) << curr[k];
         }
         TM_LOG_INFO("[generate] step = %d, [%s]", step_ - 1, scurr.str().c_str());
@@ -622,15 +623,13 @@ void LlamaBatch<T>::trimHookRequest(std::vector<std::shared_ptr<Request>>& infer
 }
 
 template<typename T>
-bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_requests) {
+void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_requests) {
     std::vector<int64_t> score_ptrs;
     std::vector<int64_t> bottom_ptrs;
     std::vector<int64_t> k_ptrs;
     std::vector<int64_t> v_ptrs;
     std::vector<int> windows;
     std::vector<int> bottoms_k_;
-
-    ptrs.reserve(infer_requests.size());
 
     for (auto r: infer_requests) {
         // update cache meta info
@@ -652,10 +651,10 @@ bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
             const int bottom_k = seq.cache_len - 1024;
             const int window = seq.cache_len - param.GROUP;
 
-            score_ptrs.push_back(reinterpret_cast<in64_t>(seq.attn_score_sum));
-            bottom_ptrs.push_back(reinterpret_cast<in64_t>(seq.attn_score_bottom_index));
-            k_ptrs.push_back(reinterpret_cast<in64_t>(seq.k_cache));
-            v_ptrs.push_back(reinterpret_cast<in64_t>(seq.v_cache));
+            score_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_sum));
+            bottom_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_bottom_index));
+            k_ptrs.push_back(reinterpret_cast<int64_t>(seq.k_cache));
+            v_ptrs.push_back(reinterpret_cast<int64_t>(seq.v_cache));
             bottoms_k_.push_back(bottom_k);
             windows.push_back(window);
 
@@ -665,21 +664,21 @@ bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         llama_->kv_cache_mgr_->update(seq, stream_);
     }
 
-    if (not ptrs.empty()) {
+    if (not score_ptrs.empty()) {
 
         const int batch_size = infer_requests.size();
         check_cuda_error(cudaMemcpyAsync(trim_score_ptrs_, score_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
         check_cuda_error(cudaMemcpyAsync(trim_index_ptrs_, bottom_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
-        check_cuda_error(cudaMemcpyAsync(trim_window_ptr_, windows.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_));
-        check_cuda_error(cudaMemcpyAsync(trim_bottom_k_ptr_, bottoms_k_.data(), sizeof(int) * ptrs.size(), cudaMemcpyHostToDevice, stream_));
+        check_cuda_error(cudaMemcpyAsync(trim_window_ptr_, windows.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
+        check_cuda_error(cudaMemcpyAsync(trim_bottom_k_ptr_, bottoms_k_.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
         check_cuda_error(cudaStreamSynchronize(stream_));
 
         AttentionScoreSortParam param;
         param.score_device_ptrs = trim_score_ptrs_;
         param.index_device_ptrs = trim_index_ptrs_;
-        param.index_host_ptrs = (int64_t*)bottom_ptrs.data();
-        param.k_ptrs = (int64_t*)k_ptrs.data();
-        param.v_ptrs = (int64_t*)v_ptrs.data();
+        param.index_host_ptrs = (uint64_t*)bottom_ptrs.data();
+        param.k_ptrs = (uint64_t*)k_ptrs.data();
+        param.v_ptrs = (uint64_t*)v_ptrs.data();
 
         param.window_device_ptr = trim_window_ptr_;
         param.window_host_ptr = (int*)windows.data();
@@ -689,8 +688,8 @@ bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         param.layer_num = llama_->num_layer_;
         param.num_heads = llama_->head_num_;
         param.size_per_head = llama_->size_per_head_;
-        param.max_seq_len = llama_->session_len;
-        param.stride = llama_->session_len / 2 + 128;
+        param.max_seq_len = llama_->session_len_;
+        param.stride = llama_->session_len_ / 2 + 128;
         invokeCacheKVTrim(param, stream_);
     }
     check_cuda_error(cudaStreamSynchronize(stream_));
@@ -722,7 +721,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
 {
     FT_CHECK(batch_size_ + infer_requests.size() <= max_batch_size_);
 
-    const int infer_request_count = infer_requests.size();
+    const uint32_t infer_request_count = infer_requests.size();
 
     allocateBuffer(batch_size_ + infer_request_count, session_len_);
 
@@ -745,7 +744,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
 
         const int step = r.inputs[rank_].getVal<int>("step", -1);
         if (step >= 0) {
-            if (step <= seq.token_ids.size()) {
+            if (step <= static_cast<int>(seq.token_ids.size())) {
                 seq.token_ids.resize(step);
                 seq.cache_len = std::min(seq.cache_len, (size_t)step);
             }
@@ -779,7 +778,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
         std::vector<int> idxs(tmp_input_length.size());
         std::iota(idxs.begin(), idxs.end(), 0);
         std::sort(idxs.begin(), idxs.end(), [&](int i, int j) { return tmp_input_length[i] < tmp_input_length[j]; });
-        for (int i = 0; i < idxs.size(); ++i) {
+        for (size_t i = 0; i < idxs.size(); ++i) {
             requests_[batch_size_ + i]   = infer_requests[idxs[i]];
             cached_seq_[batch_size_ + i] = tmp_cached_seq[idxs[i]];
         }

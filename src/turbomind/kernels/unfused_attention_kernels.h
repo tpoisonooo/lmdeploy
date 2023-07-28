@@ -66,23 +66,22 @@ struct AttentionScoreSumParam {
     int k_length    = 0;
     int num_heads   = 0;
     int stride      = 0;
-    int layerid     = 0;
+    int layer_id     = 0;
 };
 
 template<typename T>
 void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stream);
 
-template<typename T>
 struct AttentionScoreSortParam {
     // shape [batch_size, layer_num, 1, 1, max_seq_len]
-    int64_t* score_device_ptrs = nullptr;
+    uint64_t* score_device_ptrs = nullptr;
     // shape [batch_size, layer_num, window], window = cur_input_seq_len - GROUP
-    int64_t* index_device_ptrs = nullptr;
-    int64_t* index_host_ptrs = nullptr;
+    uint64_t* index_device_ptrs = nullptr;
+    uint64_t* index_host_ptrs = nullptr;
 
     // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
-    int64_t* k_ptrs = nullptr;
-    int64_t* v_ptrs = nullptr;
+    uint64_t* k_ptrs = nullptr;
+    uint64_t* v_ptrs = nullptr;
 
     // shape [batch_size], value < 128
     int* window_device_ptr  = nullptr;
@@ -106,10 +105,9 @@ struct AttentionScoreSortParam {
 };
 
 template<typename T>
-void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, const std::vector<int>& indexes, AttentionScoreSortParam<T>& param, cudaStream_t stream);
+void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, const std::vector<int>& indexes, AttentionScoreSortParam& param, cudaStream_t stream);
 
-template<typename T>
-void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream);
+void invokeCacheKVTrim(AttentionScoreSortParam& param, cudaStream_t stream);
 
 template<typename T, typename T_IN>
 void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream);

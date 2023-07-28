@@ -207,7 +207,6 @@ inline void LlamaContextAttentionLayer<T>::forward(TensorMap*                   
     if (use_fmha_) {
         fusedMultiHeadAttention(k_cache_ptrs,
                                 v_cache_ptrs,
-                                attn_sum_ptrs,
                                 layer_offset,
                                 attention_mask,
                                 cu_seqlens,
@@ -378,7 +377,7 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
         // sum attention_score
         // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
         // to [batch_size, 1, 1, max_k_len]
-        AttentionScoreSumParam param;
+        AttentionScoreSumParam<T> param;
         param.attn_score    = qk_buf_;
         param.score_sum     = attn_sum_ptrs;
         param.batch_size    = batch_size;
