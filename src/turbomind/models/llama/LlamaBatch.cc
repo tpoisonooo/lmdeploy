@@ -625,7 +625,7 @@ void LlamaBatch<T>::trimHookRequest(std::vector<std::shared_ptr<Request>>& infer
 template<typename T>
 void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_requests) {
     std::vector<int64_t> score_ptrs;
-    std::vector<int64_t> bottom_ptrs;
+    std::vector<int64_t> index_ptrs;
     std::vector<int64_t> k_ptrs;
     std::vector<int64_t> v_ptrs;
     std::vector<int> windows;
@@ -652,7 +652,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
             const int window = seq.cache_len - param.GROUP;
 
             score_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_sum));
-            bottom_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_bottom_index));
+            index_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_bottom_index));
             k_ptrs.push_back(reinterpret_cast<int64_t>(seq.k_cache));
             v_ptrs.push_back(reinterpret_cast<int64_t>(seq.v_cache));
             bottoms_k_.push_back(bottom_k);
@@ -668,7 +668,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
 
         const int batch_size = infer_requests.size();
         check_cuda_error(cudaMemcpyAsync(trim_score_ptrs_, score_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
-        check_cuda_error(cudaMemcpyAsync(trim_index_ptrs_, bottom_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
+        check_cuda_error(cudaMemcpyAsync(trim_index_ptrs_, index_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
         check_cuda_error(cudaMemcpyAsync(trim_window_ptr_, windows.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
         check_cuda_error(cudaMemcpyAsync(trim_bottom_k_ptr_, bottoms_k_.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
         check_cuda_error(cudaStreamSynchronize(stream_));
@@ -676,7 +676,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         AttentionScoreSortParam param;
         param.score_device_ptrs = trim_score_ptrs_;
         param.index_device_ptrs = trim_index_ptrs_;
-        param.index_host_ptrs = (uint64_t*)bottom_ptrs.data();
+        param.index_host_ptrs = (uint64_t*)index_ptrs.data();
         param.k_ptrs = (uint64_t*)k_ptrs.data();
         param.v_ptrs = (uint64_t*)v_ptrs.data();
 

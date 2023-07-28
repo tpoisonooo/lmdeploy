@@ -374,6 +374,8 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
     sync_check_cuda_error();
 
     if (not use_fmha_ and (quant_policy_ & QuantPolicy::kCacheKVTrim)) {
+
+        ScopeDebugTensor debug_score(qk_buf, DataType::TYPE_FP16, batch_size * local_head_num_ * max_q_len * max_k_len);
         // sum attention_score
         // from shape [batch_size, local_head_num_, max_q_len, max_k_len]
         // to [batch_size, 1, 1, max_k_len]
@@ -387,6 +389,9 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
         param.stride        = max_seq_len / 2 + 128; 
         param.layer_id      = layer_id;
         invokeAttentionScoreSum(param, stream_);
+
+        ScopeDebugTensor debug_sum(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
+
     }
 
     //////////////////////////////////////////////
