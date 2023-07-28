@@ -58,7 +58,7 @@ struct MaskedSoftmaxParam {
 template<typename T>
 struct AttentionScoreSumParam {
     // attention score shape [batch, layer_num, num_head, q, k]
-    const T* attn_score = nullptr;
+    T* attn_score = nullptr;
     // reduce sum to tensor with shape [batch, layer_num, 1, 1, k] which is part of `struct Sequence`
     float** score_sum   = nullptr;
     int batch_size  = 0;
@@ -78,6 +78,7 @@ struct AttentionScoreSortParam {
     int64_t* score_device_ptrs = nullptr;
     // shape [batch_size, layer_num, window], window = cur_input_seq_len - GROUP
     int64_t* index_device_ptrs = nullptr;
+    int64_t* index_host_ptrs = nullptr;
 
     // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
     int64_t* k_ptrs = nullptr;
@@ -103,6 +104,9 @@ struct AttentionScoreSortParam {
 
     int quant_policy = 0;
 };
+
+template<typename T>
+void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, const std::vector<int>& indexes, AttentionScoreSortParam<T>& param, cudaStream_t stream);
 
 template<typename T>
 void invokeCacheKVTrim(AttentionScoreSortParam<T>& param, cudaStream_t stream);

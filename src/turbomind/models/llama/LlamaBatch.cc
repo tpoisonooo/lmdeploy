@@ -677,6 +677,7 @@ bool LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         AttentionScoreSortParam param;
         param.score_device_ptrs = trim_score_ptrs_;
         param.index_device_ptrs = trim_index_ptrs_;
+        param.index_host_ptrs = (int64_t*)bottom_ptrs.data();
         param.k_ptrs = (int64_t*)k_ptrs.data();
         param.v_ptrs = (int64_t*)v_ptrs.data();
 
