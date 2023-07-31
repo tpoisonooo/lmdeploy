@@ -469,7 +469,6 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
             batch_.trimMarkFlag(infer_requests);
             batch_.trimUpdateKV(infer_requests);
             modified = true;
-            
         }
 
         // wait while shared stop/infer_requests is being used

@@ -107,7 +107,7 @@ struct AttentionScoreSortParam {
 template<typename T>
 void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, const std::vector<int>& indexes, AttentionScoreSortParam& param, cudaStream_t stream);
 
-void invokeCacheKVTrim(AttentionScoreSortParam& param, cudaStream_t stream);
+void invokeCacheKVTrimSync(AttentionScoreSortParam& param, cudaStream_t stream);
 
 template<typename T, typename T_IN>
 void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream);

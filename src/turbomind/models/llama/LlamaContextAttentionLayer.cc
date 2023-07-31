@@ -426,7 +426,7 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
             }
             fprintf(stdout, "%f\n", softmax_sum);
             
-            Tensor t{MemoryType::MEMORY_CPU, DataType::TYPE_FP32, {32, max_q_len}, data_ptr};
+            Tensor t{MemoryType::MEMORY_CPU, DataType::TYPE_FP32, {32, param.stride}, data_ptr};
             t.saveNpy("/workspace/GitProjects/npy/attn_sum.npy");
         }
         fprintf(stdout, " debug ");

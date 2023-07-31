@@ -658,7 +658,8 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
             bottoms_k_.push_back(bottom_k);
             windows.push_back(window);
 
-            seq.token_ids.resize(1024 - param.GROUP);
+            seq.token_ids.resize(1024);
+            seq.cache_len = 1024;
         }
 
         llama_->kv_cache_mgr_->update(seq, stream_);
@@ -690,9 +691,8 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         param.size_per_head = llama_->size_per_head_;
         param.max_seq_len = llama_->session_len_;
         param.stride = llama_->session_len_ / 2 + 128;
-        invokeCacheKVTrim(param, stream_);
+        invokeCacheKVTrimSync(param, stream_);
     }
-    check_cuda_error(cudaStreamSynchronize(stream_));
 }
 
 template<typename T>
