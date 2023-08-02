@@ -882,7 +882,7 @@ void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, con
         for(int start_idx = window; start_idx < end_idx; start_idx += bottom_k) {
             const int chunk = min(start_idx + bottom_k, end_idx) - start_idx;
 
-            fprintf(stdout, "move %d to %d with chunk %d \n", start_idx, start_idx - bottom_k, chunk);
+            // fprintf(stdout, "move %d to %d with chunk %d \n", start_idx, start_idx - bottom_k, chunk);
 
             const int from_offset = param.size_per_head * start_idx;
             const int to_offset = param.size_per_head * (start_idx - bottom_k);

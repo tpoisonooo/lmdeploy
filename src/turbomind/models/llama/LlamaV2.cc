@@ -445,9 +445,9 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
             batch_.verifyRequests(stop_requests, infer_requests);
         }
 
-        if (not infer_requests.empty()) {
-            fprintf(stdout, "debug");
-        }
+        // if (not infer_requests.empty()) {
+        //     fprintf(stdout, "debug");
+        // }
 
         // wait while rank-0 is dequeueing
         shared_state_->barrier->wait();

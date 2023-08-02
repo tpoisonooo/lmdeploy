@@ -400,36 +400,36 @@ void LlamaContextAttentionLayer<T>::unfusedMultiHeadAttention(T**          key_c
         param.layer_id      = layer_id;
         {
             // save attn score to np
-            Tensor t{MemoryType::MEMORY_GPU, DataType::TYPE_FP16, {batch_size, local_head_num_, max_q_len, max_k_len}, qk_buf_};
-            t.saveNpy("/workspace/GitProjects/npy/attn_score.npy");
+            // Tensor t{MemoryType::MEMORY_GPU, DataType::TYPE_FP16, {batch_size, local_head_num_, max_q_len, max_k_len}, qk_buf_};
+            // t.saveNpy("/workspace/GitProjects/npy/attn_score.npy");
         }
 
-        ScopeDebugTensor debug_sum_before(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
-        {
-            float softmax_sum = 0.f;
-            float* data_ptr = reinterpret_cast<float*>(debug_sum_before.cpu_datas[0]);
-            for (int i = 0; i < param.stride; ++i) {
-                softmax_sum += data_ptr[i + layer_id * param.stride];
-            }
-            fprintf(stdout, "%f\n", softmax_sum);
-        }
+        // ScopeDebugTensor debug_sum_before(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
+        // {
+        //     float softmax_sum = 0.f;
+        //     float* data_ptr = reinterpret_cast<float*>(debug_sum_before.cpu_datas[0]);
+        //     for (int i = 0; i < param.stride; ++i) {
+        //         softmax_sum += data_ptr[i + layer_id * param.stride];
+        //     }
+        //     fprintf(stdout, "%f\n", softmax_sum);
+        // }
 
         invokeAttentionScoreSum(param, stream_);
         sync_check_cuda_error();
 
-        ScopeDebugTensor debug_sum_after(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * param.stride);
-        {
-            float softmax_sum = 0.f;
-            float* data_ptr = reinterpret_cast<float*>(debug_sum_after.cpu_datas[1]);
-            for (int i = 0; i < param.stride; ++i) {
-                softmax_sum += data_ptr[i + layer_id * param.stride];
-            }
-            fprintf(stdout, "%f\n", softmax_sum);
+        // ScopeDebugTensor debug_sum_after(attn_sum_ptrs, DataType::TYPE_FP32, batch_size, param.batch_size * (layer_id + 1) *  param.stride);
+        // {
+        //     float softmax_sum = 0.f;
+        //     float* data_ptr = reinterpret_cast<float*>(debug_sum_after.cpu_datas[0]);
+        //     for (int i = 0; i < param.stride; ++i) {
+        //         softmax_sum += data_ptr[i + layer_id * param.stride];
+        //     }
+        //     fprintf(stdout, "%f\n", softmax_sum);
             
-            Tensor t{MemoryType::MEMORY_CPU, DataType::TYPE_FP32, {32, param.stride}, data_ptr};
-            t.saveNpy("/workspace/GitProjects/npy/attn_sum.npy");
-        }
-        fprintf(stdout, " debug ");
+        //     Tensor t{MemoryType::MEMORY_CPU, DataType::TYPE_FP32, {32, param.stride}, data_ptr};
+        //     t.saveNpy("/workspace/GitProjects/npy/attn_sum.npy");
+        // }
+        // fprintf(stdout, " debug ");
     }
 
     //////////////////////////////////////////////

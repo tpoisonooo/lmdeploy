@@ -641,7 +641,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
         seq.cache_len += cur_decode_length;
         seq.token_ids.resize(seq.cache_len);
 
-        cudaMemcpyAsync(seq.token_ids.data() + last_index, param.user_input_ptr_device, sizeof(int32_t) * cur_decode_length, cudaMemcpyDeviceToHost, stream_);
+        check_cuda_error(cudaMemcpy(seq.token_ids.data() + last_index, param.user_input_ptr_device, sizeof(int32_t) * cur_decode_length, cudaMemcpyDeviceToHost));
 
         if (seq.cache_len > 1024) {
             // for example seq.cache_len==1128, keep latest 128 kv cache 
@@ -650,6 +650,8 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
 
             const int bottom_k = seq.cache_len - 1024;
             const int window = seq.cache_len - param.GROUP;
+
+            fprintf(stdout, "cache_len %d trim %d\n", seq.cache_len, bottom_k);
 
             score_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_sum));
             index_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_bottom_index));
@@ -660,6 +662,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
 
             seq.token_ids.resize(1024);
             seq.cache_len = 1024;
+            h_context_length_buf_[r->id] -= bottom_k;
         }
 
         llama_->kv_cache_mgr_->update(seq, stream_);
@@ -976,7 +979,7 @@ void LlamaBatch<T>::contextDecode()
                     context_decoder_ids += get_input_len(j);
                 }
 
-                llama_->contextDecode(nullptr,
+                llama_->contextDecode(nullptr, // gdb start_id 是否计入 context_len
                                       k_cache_ptr_buf_ + offset,
                                       v_cache_ptr_buf_ + offset,
                                       attn_sum_ptrs_ + offset,
