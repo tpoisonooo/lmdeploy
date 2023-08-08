@@ -662,7 +662,7 @@ void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_re
 
             seq.token_ids.resize(1024);
             seq.cache_len = 1024;
-            h_context_length_buf_[r->id] -= bottom_k;
+            h_context_length_buf_[r->id] = 1024;
         }
 
         llama_->kv_cache_mgr_->update(seq, stream_);
@@ -720,7 +720,7 @@ void LlamaBatch<T>::trimMarkFlag(std::vector<std::shared_ptr<Request>>& infer_re
 }
 
 template<typename T>
-void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infer_requests)
+void LlamaBatch<T>::reInitialize(const std::vector<std::shared_ptr<Request>>& infer_requests)
 {
     FT_CHECK(batch_size_ + infer_requests.size() <= max_batch_size_);
 
