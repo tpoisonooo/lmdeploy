@@ -2,6 +2,7 @@
 
 #include "src/turbomind/models/llama/LlamaBatch.h"
 #include "src/turbomind/kernels/decoding_kernels.h"
+#include "src/turbomind/kernels/unfused_attention_kernels.h"
 #include "src/turbomind/models/llama/LlamaNcclGuard.h"
 #include "src/turbomind/models/llama/LlamaV2.h"
 #include "src/turbomind/models/llama/Request.h"
@@ -58,7 +59,7 @@ void LlamaBatch<T>::verifyRequests(std::vector<std::shared_ptr<Request>>& stop_r
 
     auto drop_invalid = [](std::vector<std::shared_ptr<Request>>& rs) {
         int count = 0;
-        for (int i = 0; i < rs.size(); ++i) {
+        for (size_t i = 0; i < rs.size(); ++i) {
             if (rs[i]) {
                 rs[count++] = std::move(rs[i]);
             }
@@ -171,9 +172,16 @@ void LlamaBatch<T>::allocateBuffer(size_t batch_size, size_t session_len)
 
     k_cache_ptr_buf_ = (uint64_t*)allocator_->reMalloc(k_cache_ptr_buf_, sizeof(uint64_t) * batchxbeam);
     v_cache_ptr_buf_ = (uint64_t*)allocator_->reMalloc(v_cache_ptr_buf_, sizeof(uint64_t) * batchxbeam);
+    attn_sum_ptrs_   = (uint64_t*)allocator_->reMalloc(attn_sum_ptrs_, 3 * sizeof(uint64_t) * batchxbeam);
+    trim_score_ptrs_ = attn_sum_ptrs_ + batchxbeam;
+    trim_index_ptrs_ = trim_score_ptrs_ + batchxbeam;
+
+    trim_window_ptr_ = (int*)allocator_->reMalloc(trim_window_ptr_, 2 * sizeof(int) * batchxbeam);
+    trim_bottom_k_ptr_ = trim_window_ptr_ + batchxbeam;
 
     logits_buf_       = (float*)allocator_->reMalloc(logits_buf_, sizeof(float) * batchxbeam * vocab_size, false);
     local_logits_buf_ = (float*)allocator_->reMalloc(local_logits_buf_, sizeof(float) * batchxbeam * vocab_size, false);
+    // attention_score_sum_buf_ = (float*)allocator_->reMalloc(attention_score_sum_buf_, sizeof(float) * batchxbeam, true, false);
 
     token_ids_buf_ = (int*)allocator_->reMalloc(token_ids_buf_, sizeof(int) * batchxbeam * session_len * 2, true);
 
@@ -228,6 +236,8 @@ void LlamaBatch<T>::allocatePersistantBuffer(size_t max_batch_size)
             (uintptr_t*)allocator_->reMalloc(h_k_cache_ptr_buf_, sizeof(uintptr_t) * max_batch_size, true, true);
         h_v_cache_ptr_buf_ =
             (uintptr_t*)allocator_->reMalloc(h_v_cache_ptr_buf_, sizeof(uintptr_t) * max_batch_size, true, true);
+        h_attn_sum_ptrs_ =
+            (uintptr_t*)allocator_->reMalloc(h_attn_sum_ptrs_, sizeof(uintptr_t) * max_batch_size, true, true);
         h_finished_buf_ = (bool*)allocator_->reMalloc(h_finished_buf_, sizeof(bool) * max_batch_size, false, true);
         h_seq_limit_len_ =
             (uint32_t*)allocator_->reMalloc(h_seq_limit_len_, sizeof(uint32_t) * max_batch_size, false, true);
@@ -257,6 +267,8 @@ void LlamaBatch<T>::freeBuffer()
 
         allocator_->free((void**)&k_cache_ptr_buf_);
         allocator_->free((void**)&v_cache_ptr_buf_);
+        allocator_->free((void**)&attn_sum_ptrs_);
+        allocator_->free((void**)&trim_window_ptr_);
 
         allocator_->free((void**)&logits_buf_);
         allocator_->free((void**)&local_logits_buf_);
@@ -278,6 +290,7 @@ void LlamaBatch<T>::freeBuffer()
         allocator_->free((void**)&h_sequence_lengths_, true);
         allocator_->free((void**)&h_k_cache_ptr_buf_, true);
         allocator_->free((void**)&h_v_cache_ptr_buf_, true);
+        allocator_->free((void**)&h_attn_sum_ptrs_, true);
         allocator_->free((void**)&h_seq_limit_len_, true);
         allocator_->free((void**)&h_finished_buf_, true);
 
@@ -403,7 +416,9 @@ void LlamaBatch<T>::initializeGeneration()
         k_cache_ptr_buf_, h_k_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
     check_cuda_error(cudaMemcpyAsync(
         v_cache_ptr_buf_, h_v_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
-
+    check_cuda_error(cudaMemcpyAsync(
+        attn_sum_ptrs_, h_attn_sum_ptrs_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
+    
     check_cuda_error(
         cudaMemcpyAsync(sequence_lengths_, context_length_buf_, sizeof(int) * batch_size_, cudaMemcpyDefault, stream_));
     // `sequence_lengths_` will be increased by dynamic decode
@@ -485,6 +500,7 @@ bool LlamaBatch<T>::generate()
     llama_->decoderForward(decoder_output_buf_,
                            k_cache_ptr_buf_,
                            v_cache_ptr_buf_,
+                           attn_sum_ptrs_,
                            decoder_input_buf_,
                            sequence_lengths_,
                            total_padding_count_,
@@ -534,7 +550,7 @@ bool LlamaBatch<T>::generate()
         }
 
         std::stringstream scurr;
-        for (int k = 0; k < curr.size(); ++k) {
+        for (size_t k = 0; k < curr.size(); ++k) {
             scurr << std::setw(6) << curr[k];
         }
         TM_LOG_INFO("[generate] step = %d, [%s]", step_ - 1, scurr.str().c_str());
@@ -606,15 +622,81 @@ void LlamaBatch<T>::trimHookRequest(std::vector<std::shared_ptr<Request>>& infer
     }
 }
 
-// template<typename T>
-// std::vector<std::shared_ptr<Request>> trimNextRound(std::vector<std::shared_ptr<Request>>& infer_requests)
-// {
-//     std::vector<std::shared_ptr<Request>> requests;
-//     std::copy_if(infer_requests.begin(), infer_requests.end(), std::back_inserter(requests), [](std::shared_ptr<Request> r) {
-//         return r->cache_kv_param.stage == CacheKVTrimParam::kNext;
-//     });
-//     return requests;
-// }
+template<typename T>
+void LlamaBatch<T>::trimUpdateKV(std::vector<std::shared_ptr<Request>>& infer_requests) {
+    std::vector<int64_t> score_ptrs;
+    std::vector<int64_t> index_ptrs;
+    std::vector<int64_t> k_ptrs;
+    std::vector<int64_t> v_ptrs;
+    std::vector<int> windows;
+    std::vector<int> bottoms_k_;
+
+    for (auto r: infer_requests) {
+        // update cache meta info
+        const CacheKVTrimParam& param = r->cache_kv_param;
+        const int cur_decode_length = std::min(param.GROUP, param.user_input_length-param.processed_length);
+
+        LlamaCacheManager::Sequence seq = llama_->kv_cache_mgr_->fetch(r->id, stream_);
+        const int last_index = seq.cache_len;
+        seq.cache_len += cur_decode_length;
+        seq.token_ids.resize(seq.cache_len);
+
+        check_cuda_error(cudaMemcpy(seq.token_ids.data() + last_index, param.user_input_ptr_device, sizeof(int32_t) * cur_decode_length, cudaMemcpyDeviceToHost));
+
+        if (seq.cache_len > 1024) {
+            // for example seq.cache_len==1128, keep latest 128 kv cache 
+            // for former 1000 parts, remove (1000-896)+128=232, then concat with lastest
+            // finally get 1128-232+128=896 kv cache
+
+            const int bottom_k = seq.cache_len - 1024;
+            const int window = seq.cache_len - param.GROUP;
+
+            fprintf(stdout, "cache_len %d trim %d\n", seq.cache_len, bottom_k);
+
+            score_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_sum));
+            index_ptrs.push_back(reinterpret_cast<int64_t>(seq.attn_score_bottom_index));
+            k_ptrs.push_back(reinterpret_cast<int64_t>(seq.k_cache));
+            v_ptrs.push_back(reinterpret_cast<int64_t>(seq.v_cache));
+            bottoms_k_.push_back(bottom_k);
+            windows.push_back(window);
+
+            seq.token_ids.resize(1024);
+            seq.cache_len = 1024;
+            h_context_length_buf_[r->id] = 1024;
+        }
+
+        llama_->kv_cache_mgr_->update(seq, stream_);
+    }
+
+    if (not score_ptrs.empty()) {
+
+        const int batch_size = infer_requests.size();
+        check_cuda_error(cudaMemcpyAsync(trim_score_ptrs_, score_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
+        check_cuda_error(cudaMemcpyAsync(trim_index_ptrs_, index_ptrs.data(), sizeof(int64_t&) * batch_size, cudaMemcpyHostToDevice));
+        check_cuda_error(cudaMemcpyAsync(trim_window_ptr_, windows.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
+        check_cuda_error(cudaMemcpyAsync(trim_bottom_k_ptr_, bottoms_k_.data(), sizeof(int) * batch_size, cudaMemcpyHostToDevice, stream_));
+        check_cuda_error(cudaStreamSynchronize(stream_));
+
+        AttentionScoreSortParam param;
+        param.score_device_ptrs = trim_score_ptrs_;
+        param.index_device_ptrs = trim_index_ptrs_;
+        param.index_host_ptrs = (uint64_t*)index_ptrs.data();
+        param.k_ptrs = (uint64_t*)k_ptrs.data();
+        param.v_ptrs = (uint64_t*)v_ptrs.data();
+
+        param.window_device_ptr = trim_window_ptr_;
+        param.window_host_ptr = (int*)windows.data();
+        param.bottom_k_device_ptr = trim_bottom_k_ptr_;
+        param.bottom_k_host_ptr = (int*)bottoms_k_.data();
+        param.batch_size = batch_size;
+        param.layer_num = llama_->num_layer_;
+        param.num_heads = llama_->head_num_;
+        param.size_per_head = llama_->size_per_head_;
+        param.max_seq_len = llama_->session_len_;
+        param.stride = llama_->session_len_ / 2 + 128;
+        invokeCacheKVTrimSync(param, stream_);
+    }
+}
 
 template<typename T>
 bool LlamaBatch<T>::trimStartGenerate(std::vector<std::shared_ptr<Request>>& infer_requests) {
@@ -634,58 +716,15 @@ void LlamaBatch<T>::trimMarkFlag(std::vector<std::shared_ptr<Request>>& infer_re
         if (r->cache_kv_param.stage != CacheKVTrimParam::kNone and r->start_flag) {
             r->start_flag = false;
         }
-
-        LlamaCacheManager::Sequence seq = llama_->kv_cache_mgr_->fetch(r->id, stream_);
-        const CacheKVTrimParam& param = r->cache_kv_param;
-        const int cur_decode_length = std::min(param.GROUP, param.user_input_length-param.processed_length);
-
-        const int last_index = seq.cache_len;
-        seq.cache_len += cur_decode_length;
-        seq.token_ids.resize(seq.cache_len);
-
-        check_cuda_error(cudaMemcpy(seq.token_ids.data() + last_index, param.user_input_ptr_device, sizeof(int32_t) * cur_decode_length, cudaMemcpyDeviceToHost));
-
-        llama_->kv_cache_mgr_->update(seq, stream_);
     }
-
-        // // the last generated token is not processed by decoder thus dont have k/v cache
-        // const int n_steps    = step_ - max_context_len_;
-        // const int cache_len  = h_sequence_lengths_[index];
-        // const int output_len = n_steps > 0 ? cache_len + 1 : cache_len;
-
-        // auto& seq = cached_seq_[index];
-
-        // seq.cache_len = cache_len;
-
-        // // update token IDs
-        // seq.token_ids.resize(output_len);
-        // check_cuda_error(cudaMemcpyAsync(
-        //     seq.token_ids.data(), output_ids_data, sizeof(int) * output_len, cudaMemcpyDefault, stream_));
-
-        // // update random states
-        // seq.random_state_.resize(sizeof(curandState_t) * 2);
-        // check_cuda_error(cudaMemcpyAsync(seq.random_state_.data(),
-        //                                  llama_->dynamic_decode_layer_->topk_curandstate_buf() + index,
-        //                                  sizeof(curandState_t),
-        //                                  cudaMemcpyDefault,
-        //                                  stream_));
-        // check_cuda_error(cudaMemcpyAsync(seq.random_state_.data() + sizeof(curandState_t),
-        //                                  llama_->dynamic_decode_layer_->topp_curandstate_buf() + index,
-        //                                  sizeof(curandState_t),
-        //                                  cudaMemcpyDefault,
-        //                                  stream_));
-
-        // check_cuda_error(cudaStreamSynchronize(stream_));
-
-        // llama_->kv_cache_mgr_->update(cached_seq_[index], stream_);
 }
 
 template<typename T>
-void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infer_requests)
+void LlamaBatch<T>::reInitialize(const std::vector<std::shared_ptr<Request>>& infer_requests)
 {
     FT_CHECK(batch_size_ + infer_requests.size() <= max_batch_size_);
 
-    const int infer_request_count = infer_requests.size();
+    const uint32_t infer_request_count = infer_requests.size();
 
     allocateBuffer(batch_size_ + infer_request_count, session_len_);
 
@@ -708,7 +747,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
 
         const int step = r.inputs[rank_].getVal<int>("step", -1);
         if (step >= 0) {
-            if (step <= seq.token_ids.size()) {
+            if (step <= static_cast<int>(seq.token_ids.size())) {
                 seq.token_ids.resize(step);
                 seq.cache_len = std::min(seq.cache_len, (size_t)step);
             }
@@ -742,7 +781,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
         std::vector<int> idxs(tmp_input_length.size());
         std::iota(idxs.begin(), idxs.end(), 0);
         std::sort(idxs.begin(), idxs.end(), [&](int i, int j) { return tmp_input_length[i] < tmp_input_length[j]; });
-        for (int i = 0; i < idxs.size(); ++i) {
+        for (size_t i = 0; i < idxs.size(); ++i) {
             requests_[batch_size_ + i]   = infer_requests[idxs[i]];
             cached_seq_[batch_size_ + i] = tmp_cached_seq[idxs[i]];
         }
@@ -842,6 +881,7 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
 
         h_k_cache_ptr_buf_[i] = (uint64_t)seq.k_cache;
         h_v_cache_ptr_buf_[i] = (uint64_t)seq.v_cache;
+        h_attn_sum_ptrs_[i] = (uint64_t)seq.attn_score_sum;
     }
 
     const int max_context_len = *std::max_element(h_context_length_buf_ + batch_size_, h_context_length_buf_ + count);
@@ -860,6 +900,8 @@ void LlamaBatch<T>::initialize(const std::vector<std::shared_ptr<Request>>& infe
         k_cache_ptr_buf_, h_k_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
     check_cuda_error(cudaMemcpyAsync(
         v_cache_ptr_buf_, h_v_cache_ptr_buf_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
+    check_cuda_error(cudaMemcpyAsync(
+        attn_sum_ptrs_, h_attn_sum_ptrs_, sizeof(uintptr_t) * batch_size_, cudaMemcpyDefault, stream_));
 
     if (llama_->tensor_para_.rank_ == 0) {
         TM_LOG_INFO("[init] infer_request_count = %d", (int)infer_request_count);
@@ -937,51 +979,10 @@ void LlamaBatch<T>::contextDecode()
                     context_decoder_ids += get_input_len(j);
                 }
 
-                // {
-                //     // kCacheKVTrim
-                //     constexpr int STEP = 128;
-                //     constexpr int CACHEKV_MAX_LEN = 1024;
-                //     std::vector<int> fragments;
-                //     if (max_input_len <= CACHEKV_MAX_LEN) {
-                //         fragments = {max_input_len};
-                //     } else {
-                //         int raw_input_len = max_input_len - CACHEKV_MAX_LEN;
-                //         while(raw_input_len > STEP) {
-                //             fragments.push_back(STEP);
-                //             raw_input_len -= STEP;
-                //         }
-                //         if (raw_input_len > 0) {
-                //             fragments.push_back(raw_input_len);
-                //         }
-                //     }
-
-                //     int last_sum = 0;
-                //     for (auto fragment: fragments) {
-                //         llama_->contextDecode(nullptr,
-                //                             k_cache_ptr_buf_ + offset,
-                //                             v_cache_ptr_buf_ + offset,
-                //                             context_decoder_input_buf_,
-                //                             nullptr,
-                //                             context_decoder_ids_buf_,
-                //                             input_length_buf_ + offset,
-                //                             history_length_buf_ + offset,
-                //                             context_length_buf_ + offset,
-                //                             token_num,
-                //                             fragment,
-                //                             last_sum + fragment,
-                //                             session_len_,
-                //                             context_decode_batch_size);
-
-                //         last_sum += fragment;
-                //         // remove processed input_buf data
-                        
-                //         // update metainfo
-                //     }
-                // }
-
-                llama_->contextDecode(nullptr,
+                llama_->contextDecode(nullptr, // gdb start_id 是否计入 context_len
                                       k_cache_ptr_buf_ + offset,
                                       v_cache_ptr_buf_ + offset,
+                                      attn_sum_ptrs_ + offset,
                                       context_decoder_input_buf_,
                                       nullptr,
                                       context_decoder_ids_buf_,
@@ -1091,6 +1092,7 @@ void LlamaBatch<T>::synchronize()
 
                 h_k_cache_ptr_buf_[idx] = h_k_cache_ptr_buf_[i];
                 h_v_cache_ptr_buf_[idx] = h_v_cache_ptr_buf_[i];
+                h_attn_sum_ptrs_[idx]   = h_attn_sum_ptrs_[i];
 
                 requests_[idx]   = std::move(requests_[i]);
                 cached_seq_[idx] = std::move(cached_seq_[i]);

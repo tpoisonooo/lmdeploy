@@ -69,12 +69,13 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     num_layer_(num_layer),
     vocab_size_(vocab_size),
     rotary_embedding_dim_(rotary_embedding_dim),
+    session_len_(session_len),
     rmsnorm_eps_(norm_eps),
+    quant_policy_(quant_policy),
     start_id_(start_id),
     end_id_(end_id),
     hidden_units_(head_num * size_per_head),
     local_head_num_(head_num / tensor_para.world_size_),
-    weights_(weights),
     tensor_para_(tensor_para),
     stream_(stream),
     cublas_wrapper_(cublas_wrapper),
@@ -82,6 +83,7 @@ LlamaV2<T>::LlamaV2(size_t                       head_num,
     is_free_buffer_after_forward_(is_free_buffer_after_forward),
     cuda_device_prop_(cuda_device_prop),
     debug_(isDebug()),
+    weights_(weights),
     step_length_(step_length),
     batch_(max_batch_size, max_context_token_num, session_len, this),
     shared_state_(shared_state)
@@ -191,6 +193,7 @@ template<typename T>
 void LlamaV2<T>::contextDecode(T*         deocder_output,
                                uintptr_t* k_cache_ptr,
                                uintptr_t* v_cache_ptr,
+                               uintptr_t* attn_sum_ptr,
                                T*         context_decoder_input_buf,
                                T*         context_decoder_output_buf,
                                const int* input_ids,
@@ -245,7 +248,9 @@ void LlamaV2<T>::contextDecode(T*         deocder_output,
         {"decoder_output", {MEMORY_GPU, dtype, {bsz, max_input_len, hidden_units_}, context_decoder_output_buf}},
         {"key_cache", {MEMORY_GPU, TYPE_UINT64, {bsz}, k_cache_ptr}},
         {"value_cache", {MEMORY_GPU, TYPE_UINT64, {bsz}, v_cache_ptr}},
-        {"last_token_hidden_units", {MEMORY_GPU, dtype, {bsz, hidden_units_}, deocder_output}}};
+        {"attention_score_sum", {MEMORY_GPU, TYPE_UINT64, {bsz}, attn_sum_ptr}},
+        {"last_token_hidden_units", {MEMORY_GPU, dtype, {bsz, hidden_units_}, deocder_output}}
+    };
 
     context_decoder_->forward(&decoder_output_tensors, &decoder_input_tensors, &weights_->decoder_layer_weights);
 
@@ -258,6 +263,7 @@ template<typename T>
 void LlamaV2<T>::decoderForward(T*         decoder_output,
                                 uintptr_t* k_cache_ptr,
                                 uintptr_t* v_cache_ptr,
+                                uintptr_t* attn_sum_ptr,
                                 T*         decoder_input,
                                 const int* sequence_length,
                                 const int* total_padding_count,
@@ -290,6 +296,7 @@ void LlamaV2<T>::decoderForward(T*         decoder_output,
         {"decoder_output", {MEMORY_GPU, dtype, {batch_size, hidden_units_}, decoder_output}},
         {"key_cache", {MEMORY_GPU, TYPE_UINT64, {batch_size}, k_cache_ptr}},
         {"value_cache", {MEMORY_GPU, TYPE_UINT64, {batch_size}, v_cache_ptr}},
+        {"attention_score_sum", {MEMORY_GPU, TYPE_UINT64, {batch_size}, attn_sum_ptr}}
     };
 
     decoder_->forward(&decoder_output_tensors, &decoder_input_tensors, &weights_->decoder_layer_weights);
@@ -438,9 +445,9 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
             batch_.verifyRequests(stop_requests, infer_requests);
         }
 
-        if (not infer_requests.empty()) {
-            fprintf(stdout, "debug");
-        }
+        // if (not infer_requests.empty()) {
+        //     fprintf(stdout, "debug");
+        // }
 
         // wait while rank-0 is dequeueing
         shared_state_->barrier->wait();
@@ -456,22 +463,18 @@ void LlamaV2<T>::internalThreadEntry(int device_id)
         const int infer_request_count = infer_requests.size();
 
         if (!infer_requests.empty()) {
-            batch_.trimHookRequest(infer_requests);
-            batch_.initialize(infer_requests);  // reinitialize when new requests come, possible buffer allocation
-            batch_.contextDecode();
-            batch_.trimMarkFlag(infer_requests);
+            do {
+                batch_.trimHookRequest(infer_requests);
+                batch_.initialize(infer_requests);  // reinitialize when new requests come, possible buffer allocation
+                batch_.contextDecode();
+                batch_.trimMarkFlag(infer_requests);
+                batch_.trimUpdateKV(infer_requests);
+            } while(not batch_.trimStartGenerate(infer_requests));
             modified = true;
-
         }
 
         // wait while shared stop/infer_requests is being used
         shared_state_->barrier->wait();
-
-        if (not batch_.trimStartGenerate(infer_requests)) {
-            // context decode not finish, continue
-            request_queue.enqueue(infer_requests);
-            continue;
-        }
 
         if (batch_.size()) {
             if (modified) {
@@ -597,7 +600,7 @@ void LlamaV2<T>::forward(std::unordered_map<std::string, Tensor>*       outputs,
 
     if (rank == 0 && has_error) {
         std::stringstream ss;
-        for (int i = 0; i < error_codes.size(); ++i) {
+        for (size_t i = 0; i < error_codes.size(); ++i) {
             ss << (i ? "" : " ") << error_codes[i];
         }
         throw std::runtime_error(ss.str());

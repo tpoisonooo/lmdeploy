@@ -97,6 +97,7 @@ private:
     void contextDecode(T*         decoder_output,
                        uintptr_t* k_cache_ptr,
                        uintptr_t* v_cache_ptr,
+                       uintptr_t* attn_sum_ptr,
                        T*         context_decoder_input_buf,
                        T*         context_decoder_output_buf,
                        const int* input_ids,
@@ -112,6 +113,7 @@ private:
     void decoderForward(T*         decoder_output,
                         uintptr_t* k_cache_ptr,
                         uintptr_t* v_cache_ptr,
+                        uintptr_t* attn_sum_ptr,
                         T*         decoder_input,
                         const int* sequence_length,
                         const int* total_padding_count,
@@ -150,7 +152,9 @@ private:
     const size_t num_layer_;
     const size_t vocab_size_;
     const size_t rotary_embedding_dim_;
+    const size_t session_len_;
     float        rmsnorm_eps_ = 1e-6f;
+    const int    quant_policy_;
 
     static constexpr bool neox_rotary_style_ = false;
 

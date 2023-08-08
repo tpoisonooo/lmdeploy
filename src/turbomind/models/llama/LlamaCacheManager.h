@@ -10,6 +10,7 @@
 
 namespace turbomind {
 
+
 // k-cache layout [L, H, D/x, S[s:], x]
 // v-cache layout [L, H, S[s:], D/x, x]
 
@@ -30,6 +31,9 @@ public:
         max_seq_len_(max_seq_len),
         elem_bits_(elem_bits),
         cache_byte_size_(layer_num_ * head_num_ * max_seq_len_ * size_per_head_ * elem_bits_ / 8),
+        // attn_sum_byte_size_(layer_num_ * head_num_ * 1280 * sizeof(float)),
+        attn_sum_byte_size_(layer_num_ * (max_seq_len / 2 + 128) * sizeof(float)),
+        attn_sum_index_size_(layer_num_ * (max_seq_len / 2 + 128) * sizeof(int)),
         max_entry_count_(max_entry_count),
         chunk_size_(chunk_size),
         rank_(rank),
@@ -54,6 +58,8 @@ public:
         size_t           cache_len;  // cache_len == 0 -> cache miss
         void*            k_cache;
         void*            v_cache;
+        void*            attn_score_sum;
+        void*            attn_score_bottom_index;
 
         std::vector<uint8_t> random_state_;  // states for RNGs
 
@@ -85,6 +91,8 @@ private:
     const size_t max_seq_len_{};
     const size_t elem_bits_{};
     const size_t cache_byte_size_{};
+    const size_t attn_sum_byte_size_{};
+    const size_t attn_sum_index_size_{};
     const size_t max_entry_count_{};
     const size_t chunk_size_{};
     const int    rank_{};

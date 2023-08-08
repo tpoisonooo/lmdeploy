@@ -55,6 +55,60 @@ struct MaskedSoftmaxParam {
     const T* linear_bias_slopes = nullptr;  // (head_num,), optional
 };
 
+template<typename T>
+struct AttentionScoreSumParam {
+    // attention score shape [batch, layer_num, num_head, q, k]
+    T* attn_score = nullptr;
+    // reduce sum to tensor with shape [batch, layer_num, 1, 1, k] which is part of `struct Sequence`
+    float** score_sum   = nullptr;
+    int batch_size  = 0;
+    int q_length    = 0;
+    int k_length    = 0;
+    int num_heads   = 0;
+    int stride      = 0;
+    int layer_id    = 0;
+};
+
+template<typename T>
+void invokeAttentionScoreSum(AttentionScoreSumParam<T>& param, cudaStream_t stream);
+
+struct AttentionScoreSortParam {
+    // shape [batch_size, layer_num, 1, 1, max_seq_len]
+    uint64_t* score_device_ptrs = nullptr;
+    // shape [batch_size, layer_num, window], window = cur_input_seq_len - GROUP
+    uint64_t* index_device_ptrs = nullptr;
+    uint64_t* index_host_ptrs = nullptr;
+
+    // shape [batch_size, layer_num, num_head, max_seq_len, max_seq_len]
+    uint64_t* k_ptrs = nullptr;
+    uint64_t* v_ptrs = nullptr;
+
+    // shape [batch_size], value < 128
+    int* window_device_ptr  = nullptr;
+    int* window_host_ptr    = nullptr;
+
+    // shape [batch_size], value < 128
+    int* bottom_k_device_ptr    = nullptr;
+    int* bottom_k_host_ptr      = nullptr;
+    int group       = 0;
+
+    int batch_size  = 0;
+    int layer_num   = 0;
+    
+    int num_heads   = 0;
+    int max_seq_len = 0;
+    int size_per_head = 0;
+
+    int stride = 0;
+
+    int quant_policy = 0;
+};
+
+template<typename T>
+void removeOrderedIndicesAsync(T* k_ptr, T* v_ptr, int window, int bottom_k, const std::vector<int>& indexes, AttentionScoreSortParam& param, cudaStream_t stream);
+
+void invokeCacheKVTrimSync(AttentionScoreSortParam& param, cudaStream_t stream);
+
 template<typename T, typename T_IN>
 void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream);
 
