@@ -11,9 +11,9 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from lmdeploy.pytorch_poc.dist_utils import (colwise_parallelize_linear_fn,
                                              rowwise_parallelize_linear_fn)
 
-from .functional import (apply_rotary_pos_emb,
+from .functional import (apply_rotary_pos_emb, apply_rotary_pos_emb_rerope,
                          attention_forward_with_paged_attention,
-                         attention_forward_with_rerope, repeat_kv, rotate_half)
+                         attention_forward_with_rerope, repeat_kv)
 
 
 class LlamaAttention(nn.Module):
@@ -62,37 +62,6 @@ class LlamaAttention(nn.Module):
         use_rerope = 'rerope' in json_config and json_config['rerope']
         if use_rerope:
 
-            def apply_rotary_pos_emb_rerope(q, k, cos, sin, position_ids):
-                # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
-                cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
-                sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-                cos = cos[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
-                sin = sin[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
-                q_embed = ((q * cos[:, -q.shape[0]:]) +
-                           (rotate_half(q) * sin[:, -q.shape[0]:])
-                           ).squeeze(0) if q is not None else None
-                k_embed = ((k * cos) + (rotate_half(k) * sin)
-                           ).squeeze(0) if k is not None else None
-                return q_embed, k_embed
-
-            def _rotary_emb_context_rerope_fn(query_states, key_states,
-                                              value_states, position_ids,
-                                              window):
-                kv_seq_len = key_states.shape[0]
-                cos, sin = self.rotary_emb(value_states,
-                                           seq_len=max(kv_seq_len, window))
-                query_states1, key_states1 = apply_rotary_pos_emb_rerope(
-                    query_states, key_states, cos, sin, position_ids)
-                query_states2, _ = apply_rotary_pos_emb_rerope(
-                    query_states, None, cos, sin, position_ids * 0 + window)
-
-                # repeat k/v heads if n_kv_heads < n_heads
-                key_states1 = repeat_kv(key_states1, self.num_key_value_groups)
-                key_states2 = repeat_kv(key_states, self.num_key_value_groups)
-                value_states = repeat_kv(value_states,
-                                         self.num_key_value_groups)
-                return query_states1, query_states2, key_states1, key_states2, value_states
-
             def _rotary_emb_generate_rerope_fn(key_states, value_states,
                                                position_ids, window):
                 kv_seq_len = key_states.shape[0]
@@ -122,7 +91,7 @@ class LlamaAttention(nn.Module):
                 k_proj=self.k_proj,
                 v_proj=self.v_proj,
                 o_proj=self.o_proj,
-                rotary_emb_context_fn=_rotary_emb_context_rerope_fn,
+                rotary_emb_forward_fn=self.rotary_emb,
                 rotary_emb_generate_fn=_rotary_emb_generate_rerope_fn,
             )
         else:

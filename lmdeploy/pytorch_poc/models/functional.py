@@ -72,6 +72,20 @@ def apply_rotary_pos_emb(q: Tensor,
     return q_embed, k_embed
 
 
+def apply_rotary_pos_emb_rerope(q, k, cos, sin, position_ids):
+    # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
+    cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
+    sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
+    cos = cos[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
+    sin = sin[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
+    q_embed = ((q * cos[:, -q.shape[0]:]) +
+               (rotate_half(q) *
+                sin[:, -q.shape[0]:])).squeeze(0) if q is not None else None
+    k_embed = ((k * cos) +
+               (rotate_half(k) * sin)).squeeze(0) if k is not None else None
+    return q_embed, k_embed
+
+
 def generate_batched_mask(q_lens,
                           k_lens,
                           max_q_len: int = None,
@@ -275,7 +289,7 @@ def attention_forward_with_rerope(
     v_proj: Optional[Callable] = None,
     qkv_proj: Optional[Callable] = None,
     o_proj: Optional[Callable] = None,
-    rotary_emb_context_fn: Optional[Callable] = None,
+    rotary_emb_forward_fn: Optional[Callable] = None,
     rotary_emb_generate_fn: Optional[Callable] = None,
     bias_type: str = 'default',
     training_length=4096,
@@ -370,17 +384,43 @@ def attention_forward_with_rerope(
             if attention_mask is not None:
                 attn_weights = attn_weights + attention_mask
         else:
-            query_states1, query_states2, key_states1, key_states2, value_states = rotary_emb_context_fn(
-                query_states, key_states, value_states, position_ids,
-                window + 1)
+
+            # def _rotary_emb_context_rerope_fn(query_states, key_states,
+            #                                   value_states, position_ids,
+            #                                   window):
+            #     kv_seq_len = key_states.shape[0]
+            #     cos, sin = rotary_emb_forward(value_states, seq_len=max(kv_seq_len, window))
+            #     query_states1, key_states1 = apply_rotary_pos_emb_rerope(
+            #         query_states, key_states, cos, sin, position_ids)
+            #     query_states2, _ = apply_rotary_pos_emb_rerope(
+            #         query_states, None, cos, sin, position_ids * 0 + window)
+
+            #     return query_states1, query_states2, key_states1, key_states2
+
+            kv_seq_len = key_states.shape[0]
+            cos, sin = rotary_emb_forward_fn(value_states,
+                                             seq_len=max(
+                                                 kv_seq_len, window + 1))
+
+            query_states1, key_states1 = apply_rotary_pos_emb_rerope(
+                query_states, key_states, cos, sin, position_ids)
             attn_weights1 = torch.matmul(query_states1.transpose(
                 0, 1), key_states1.permute(1, 2, 0)) / math.sqrt(head_dim)
+
+            query_states2, _ = apply_rotary_pos_emb_rerope(
+                query_states, None, cos, sin, position_ids * 0 + (window + 1))
             attn_weights2 = torch.matmul(query_states2.transpose(
-                0, 1), key_states2.permute(1, 2, 0)) / math.sqrt(head_dim)
+                0, 1), key_states.permute(1, 2, 0)) / math.sqrt(head_dim)
+
             rectified_mask = (position_ids[:, -q_len:, None] -
                               position_ids[:, None]).abs() < window
             attn_weights = torch.where(rectified_mask, attn_weights1,
                                        attn_weights2)
+
+            # query_states1, query_states2, key_states1, key_states2 = _rotary_emb_context_rerope_fn(
+            #     query_states, key_states, value_states, position_ids,
+            #     window + 1)
+
             if attn_weights.size() != (num_heads, q_len, kv_seq_length):
                 raise ValueError(
                     f'Attention weights should be of size {(num_heads, q_len, kv_seq_length)}, but is'
