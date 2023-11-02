@@ -140,9 +140,12 @@ class LlamaAttention(nn.Module):
                                 position_ids).clip(max=window)
                 _, key_states = apply_rotary_pos_emb_rerope_v2(
                     None, key_states, cos, -sin, position_ids)
-                key_states = repeat_kv(key_states, self.num_key_value_groups)
-                value_states = repeat_kv(value_states,
-                                         self.num_key_value_groups)
+
+                if self.num_key_value_groups > 1:
+                    key_states = repeat_kv(key_states,
+                                           self.num_key_value_groups)
+                    value_states = repeat_kv(value_states,
+                                             self.num_key_value_groups)
                 return key_states, value_states
 
             attn_output = attention_forward_with_rerope(

@@ -320,6 +320,7 @@ def attention_forward_with_rerope(
         value_states = v_proj(hidden_states)
 
     hidden_size = num_heads * head_dim
+    out_dtype = query_states.dtype
     query_states = query_states.view(-1, num_heads, head_dim)
     key_states = key_states.view(-1, num_kv_heads, head_dim)
     value_states = value_states.view(-1, num_kv_heads, head_dim)
@@ -356,12 +357,15 @@ def attention_forward_with_rerope(
     if bias_type == 'default':
 
         if q_len == 1:
-            # before_free_gpu_mem = torch.cuda.memory_allocated()
+            before_free_gpu_mem = torch.cuda.memory_allocated()
 
             key_states = past_key_value[0][block_offsets].view(
                 -1, num_heads, head_dim)[0:history_lengths[-1] + 1]
             value_states = past_key_value[1][block_offsets].view(
                 -1, num_heads, head_dim)[0:history_lengths[-1] + 1]
+
+            middle_free_gpu_mem = torch.cuda.memory_allocated()
+
             full_position_ids = torch.arange(
                 position_ids.item() + 1,
                 device=position_ids.device).unsqueeze(0)
@@ -371,23 +375,24 @@ def attention_forward_with_rerope(
             attn_weights = torch.matmul(query_states.transpose(
                 0, 1), key_states.permute(1, 2, 0)) / math.sqrt(head_dim)
 
+            # del query_states
+            # del key_states
+
+            end_free_gpu_mem = torch.cuda.memory_allocated()
+            MB = 1024 * 1024
+            # print('{} {} {}'.format(before_free_gpu_mem, middle_free_gpu_mem, end_free_gpu_mem))
+            print('{} {}'.format(
+                (middle_free_gpu_mem - before_free_gpu_mem) / MB,
+                (end_free_gpu_mem - middle_free_gpu_mem) / MB))
+
             if attention_mask is not None:
                 attn_weights = attn_weights + attention_mask
 
-            # middle_free_gpu_mem = torch.cuda.memory_allocated()
-
             # upcast attention to fp32
-            attn_weights = torch.nn.functional.softmax(attn_weights,
-                                                       dim=-1,
-                                                       dtype=torch.float32).to(
-                                                           query_states.dtype)
+            attn_weights = torch.nn.functional.softmax(
+                attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
             attn_output = torch.matmul(attn_weights,
                                        value_states.transpose(0, 1))
-
-            # end_free_gpu_mem = torch.cuda.memory_allocated()
-            # MB = 1024 * 1024
-            # print('{} {} {}'.format(before_free_gpu_mem, middle_free_gpu_mem, end_free_gpu_mem))
-            # print('{} {}'.format((middle_free_gpu_mem - before_free_gpu_mem) / MB, (end_free_gpu_mem - middle_free_gpu_mem) / MB))
 
         else:
             # before_free_gpu_mem = torch.cuda.memory_allocated()
@@ -396,21 +401,6 @@ def attention_forward_with_rerope(
                 query_states, key_states, value_states, position_ids, window)
 
             sm_scale = 1.0 / math.sqrt(head_dim)
-
-            # def torch_attention_forward(q1, q2, k1, k2, v, causal, sm_scale, window):
-            #     # reference implementation
-            #     M = torch.tril(torch.ones((N_CTX, N_CTX), device="cuda"))
-            #     p1 = torch.matmul(q1, k1.transpose(2, 3)) * sm_scale
-            #     p2 = torch.matmul(q2, k2.transpose(2, 3)) * sm_scale
-            #     if causal:
-            #         p1[:, :, M == 0] = float("-inf")
-            #         p2[:, :, M == 0] = float("-inf")
-            #     x = torch.arange(N_CTX, dtype=torch.int, device="cuda")
-            #     M2 = ((x[:, None] - x[None, :]).abs() < window)[None, None, :]
-            #     p = torch.where(M2, p1, p2)
-            #     p = torch.softmax(p.float(), dim=-1).half()
-            #     ref_out = torch.matmul(p, v)
-            #     return ref_out
 
             def torch_attention_fwd(query_states1, query_states2, key_states1,
                                     key_states2, value_states, causal,
@@ -448,8 +438,7 @@ def attention_forward_with_rerope(
 
                 # upcast attention to fp32
                 attn_weights = torch.nn.functional.softmax(
-                    attn_weights, dim=-1,
-                    dtype=torch.float32).to(query_states1.dtype)
+                    attn_weights, dim=-1, dtype=torch.float32).to(dtype)
                 attn_output = torch.matmul(attn_weights, value_states)
                 return attn_output
 
