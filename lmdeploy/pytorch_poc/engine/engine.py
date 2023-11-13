@@ -110,7 +110,7 @@ class ModelContext:
         seq_length: torch.Tensor,
         world_size: int = 1,
         device='cuda',
-        json_config: dict = None,
+        hf_config=None,
     ):
         self.block_offsets_list = block_offsets
         self.history_lengths = history_lengths
@@ -118,7 +118,7 @@ class ModelContext:
         self.q_start_loc = q_start_loc
         self.seq_length = seq_length
         self.world_size = world_size
-        self.json_config = json_config
+        self.hf_config = hf_config
 
         # padding zero
         pad_sequence = torch.nn.utils.rnn.pad_sequence
@@ -238,7 +238,8 @@ def _get_torch_dtype(config: Any, default: str = 'float16'):
         default (str): default device type.
     """
     torch_dtype = getattr(config, 'torch_dtype', default)
-    return eval(f'torch.{torch_dtype}')
+    dtype = getattr(config, 'kv_cache_dtype', torch_dtype)
+    return eval(f'torch.{dtype}')
 
 
 def _tp_model_loop(
@@ -247,7 +248,7 @@ def _tp_model_loop(
     extra_args: List[str],
     model_config: ModelConfig,
     cache_config: CacheConfig,
-    json_config: dict,
+    hf_config,
     in_que: mp.Queue,
     out_que: mp.Queue,
     world_size: int,
@@ -411,7 +412,7 @@ def _tp_model_loop(
                     seq_length=inputs['seq_length'],
                     world_size=world_size,
                 ),
-                json_config=json_config,
+                hf_config=hf_config,
                 q_seq_info=(inputs['q_start_loc'], inputs['seq_length']),
             )
 
@@ -467,8 +468,7 @@ class Engine:
                  scheduler_config: SchedulerConfig = None,
                  cache_config: CacheConfig = None,
                  tp: int = 1,
-                 trust_remote_code=True,
-                 json_config_file: str = 'config.json') -> None:
+                 trust_remote_code=True) -> None:
 
         self.tp = tp
         self.gpu_count = tp
@@ -486,9 +486,7 @@ class Engine:
                                        num_cpu_blocks=0,
                                        num_gpu_blocks=0)
 
-        self.json_config = None
-        with open(os.path.join(model_path, json_config_file)) as f:
-            self.json_config = json.load(f)
+        self.hf_config = hf_config
 
         if 'falcon' in model_path:
             if hf_config.new_decoder_architecture:
@@ -563,7 +561,7 @@ class Engine:
                 ['context', 'use_origin', 'q_seq_info'],
                 model_config=model_config,
                 cache_config=cache_config,
-                json_config=self.json_config,
+                hf_config=self.hf_config,
                 in_que=self.tp_model_in_que,
                 out_que=self.tp_model_out_que,
                 world_size=tp,
@@ -594,7 +592,7 @@ class Engine:
         extra_args: List[str],
         model_config: ModelConfig,
         cache_config: CacheConfig,
-        json_config: dict,
+        hf_config: dict,
         in_que: mp.Queue,
         out_que: mp.Queue,
         world_size: int,
@@ -621,7 +619,7 @@ class Engine:
                 dict(
                     model_config=model_config,
                     cache_config=cache_config,
-                    json_config=json_config,
+                    hf_config=hf_config,
                     in_que=in_que,
                     out_que=out_que,
                     world_size=world_size,
@@ -785,7 +783,7 @@ class Engine:
                         position_ids=inputs['position_ids'],
                         q_start_loc=inputs['q_start_loc'],
                         seq_length=inputs['seq_length'],
-                        json_config=self.json_config,
+                        hf_config=self.hf_config,
                     ),
                     q_seq_info=(inputs['q_start_loc'], inputs['seq_length']),
                 )

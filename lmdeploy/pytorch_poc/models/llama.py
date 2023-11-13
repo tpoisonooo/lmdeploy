@@ -66,11 +66,10 @@ class LlamaAttention(nn.Module):
         """
         assert not output_attentions
         context = self.context.context
-
-        json_config = self.context.context.json_config
         history_lengths = context.history_lengths
+        hf_config = context.hf_config
 
-        use_rerope = 'rerope' in json_config and json_config['rerope']
+        use_rerope = hasattr(hf_config, 'rerope') and hf_config.rerope
         if use_rerope:
 
             def apply_rotary_pos_emb_rerope(q, k, cos, sin, position_ids):
